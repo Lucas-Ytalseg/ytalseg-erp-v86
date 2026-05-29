@@ -1,0 +1,15 @@
+YTALSEG ERP - V70 CIRURGICO
+
+Correção aplicada somente no rodapé dos relatórios:
+- Card YTALSEG travado em cliente, interno e principal.
+- Card VALOR DA NOTA travado em cliente, interno e principal.
+- Valor da nota se adapta dentro do card sem esticar o layout.
+- Texto do YTALSEG voltou ao padrão visual aprovado da V66, sem deixar tudo em negrito.
+- Linha Valdemir/telefone alinhada em grid para não deslocar.
+- Nenhuma regra de login, cadastro, backups, backend, botões ou demais telas foi alterada.
+
+Arquivo alterado:
+frontend/src/modules/Relatorios.tsx
+
+Observação:
+O build não foi executado neste ambiente porque a instalação das dependências npm ficou indisponível/timeout. No Windows, execute o script de instalação/geração já existente no projeto.

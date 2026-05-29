@@ -1,0 +1,17 @@
+YTALSEG ERP - V68 CORRECAO RODAPE RELATORIO
+
+Correções aplicadas:
+1. Relatório cliente e relatório interno agora usam o mesmo bloqueio de layout do relatório principal.
+2. Nome Valdemir não quebra mais linha.
+3. Card YTALSEG e card VALOR DA NOTA ficam 50% / 50% e não deformam.
+4. Valor da nota reduz a fonte/comprime horizontalmente antes de estourar o campo.
+5. Ajuste no topo: Usuário/Perfil/Sair com mais altura para não sobrepor a imagem/título.
+
+Para testar:
+1. Entrar em frontend
+2. npm install
+3. npm run dev
+
+Para gerar EXE:
+1. Entrar em frontend
+2. npm run dist

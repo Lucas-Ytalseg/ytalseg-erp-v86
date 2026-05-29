@@ -1,0 +1,15 @@
+{
+  "name": "ytalseg-erp-v86-mobile-completo-root",
+  "version": "10.16.0",
+  "private": true,
+  "description": "YTALSEG ERP V86 Mobile completo - frontend + backend acessível no celular",
+  "scripts": {
+    "postinstall": "npm --prefix frontend install --omit=dev",
+    "mobile": "npm --prefix frontend run mobile",
+    "dev": "npm --prefix frontend run mobile",
+    "start": "npm --prefix frontend start",
+    "build": "npm --prefix frontend run build",
+    "dist": "npm --prefix frontend run dist",
+    "install-completo": "npm --prefix frontend install"
+  }
+}

@@ -1,0 +1,25 @@
+V56 FIX FORÇADO ELECTRON
+
+Esse pacote corrige o erro:
+Cannot read properties of undefined (reading 'exposeInMainWorld')
+
+O erro continua quando o arquivo frontend/electron/main.cjs ainda está com conteúdo de preload.
+O main.cjs correto NÃO tem contextBridge nem exposeInMainWorld.
+
+Instalação:
+1) Extraia este ZIP dentro da pasta:
+   C:\Users\lucas\OneDrive\Documentos\YTALSEG-ERP\frontend
+
+2) Execute no PowerShell dentro da pasta frontend:
+   powershell -ExecutionPolicy Bypass -File .\INSTALAR_V56.ps1
+
+3) Depois rode:
+   rmdir /s /q release
+   npm run dist
+
+Conferência:
+O arquivo frontend/electron/main.cjs deve começar com:
+const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+
+O arquivo frontend/electron/preload.js deve começar com:
+const { contextBridge, ipcRenderer } = require("electron");

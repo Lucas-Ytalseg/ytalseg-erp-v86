@@ -1,0 +1,29 @@
+YTALSEG ERP V79 - PRONTO PARA GERAR .EXE
+
+Base: V78-SOMA-PRINCIPAL.
+Alteração feita nesta versão: somente configuração de instalação/build.
+Não alterei telas, relatórios, cliente, interno, principal, layout ou cálculos.
+
+COMO TESTAR:
+1) Abra o PowerShell dentro desta pasta.
+2) Rode:
+   npm start
+
+COMO GERAR O INSTALADOR .EXE:
+1) Abra o PowerShell dentro desta pasta.
+2) Rode:
+   npm run build
+
+Ou use o script:
+   powershell -ExecutionPolicy Bypass -File .\GERAR_EXE_V79.ps1
+
+ONDE SAI O INSTALADOR:
+   frontend\release
+
+O arquivo esperado será algo como:
+   YTALSEG Setup.exe
+
+IMPORTANTE:
+- Na primeira vez, o npm pode instalar dependências automaticamente. Aguarde terminar.
+- Se der erro de internet ou download do Electron, rode novamente com conexão ativa.
+- Não precisa editar package.json.

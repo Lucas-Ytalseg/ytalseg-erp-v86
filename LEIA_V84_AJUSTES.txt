@@ -1,0 +1,17 @@
+YTALSEG ERP - V84 AJUSTE FINAL EM CIMA DA V83
+
+Alterações aplicadas sem refazer o app:
+1. Topo do relatório mais compacto.
+2. Mês da análise, ano da análise, empresa, aplicar 20% e PDF em uma linha.
+3. Botão "Aplicar 20% nas noturnas" movido para o topo ao lado da empresa/PDF.
+4. Botões padronizados no verde institucional.
+5. Mantida a correção da V83: adicional noturno 25% calculado sobre a base correta de dia útil, sábado ou domingo/feriado.
+6. Build do frontend validado com sucesso.
+
+Para testar:
+cd frontend
+npm start
+
+Para gerar instalador:
+cd frontend
+npm run dist

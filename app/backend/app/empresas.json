@@ -1,0 +1,32 @@
+{
+  "geoambiental": {
+    "nome": "GEOAMBIENTAL",
+    "cnpj": "05.453.862/0001-93",
+    "diaria_diurna": 560.0,
+    "diaria_noturna": 560.0,
+    "sabado": 400.0,
+    "domingo_feriado": 350.0,
+    "hora_20": 112.0,
+    "hora_50": 280.0,
+    "hora_100": 560.0,
+    "adicional_noturno": 140.0,
+    "usa_adicional_noturno": true,
+    "feriado_usa_valor_domingo": true,
+    "diaria_normal": 560.0
+  },
+  "enprin": {
+    "nome": "ENPRIN",
+    "cnpj": "47.929.542/0001-07",
+    "diaria_diurna": 230.0,
+    "diaria_noturna": 230.0,
+    "sabado": 250.0,
+    "domingo_feriado": 270.0,
+    "hora_20": 46.0,
+    "hora_50": 125.0,
+    "hora_100": 270.0,
+    "adicional_noturno": 0.0,
+    "usa_adicional_noturno": false,
+    "feriado_usa_valor_domingo": true,
+    "diaria_normal": 230.0
+  }
+}

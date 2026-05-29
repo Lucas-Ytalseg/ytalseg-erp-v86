@@ -1,0 +1,15 @@
+YTALSEG ERP - V82 FIX PREVIEW
+
+Correção aplicada:
+- Corrigido erro EBUSY/resource busy or locked ao visualizar PDF interno/cliente.
+- A visualização agora gera um arquivo PDF temporário com nome único a cada clique.
+- Não mexe no cliente, interno, tela principal, cards, fontes, layout, valores ou regras do relatório.
+
+Como usar:
+1. Extraia a pasta.
+2. Entre na pasta frontend.
+3. Rode: npm start
+4. Para gerar instalador: npm run build
+
+Observação:
+Se algum PDF antigo estiver aberto, pode fechar depois; a nova versão não tenta sobrescrever o mesmo arquivo travado.

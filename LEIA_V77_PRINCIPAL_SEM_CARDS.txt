@@ -1,0 +1,11 @@
+YTALSEG ERP - V77
+
+Base usada: V75.
+Alteração feita: somente na tela principal de edição, os cards finais YTALSEG e VALOR DA NOTA foram ocultados.
+Cliente e interno foram preservados para continuar gerando PDF com os cards.
+
+Arquivos úteis:
+- RODAR_TESTE_V77.ps1
+- GERAR_EXE_V77.ps1
+
+Não foi alterada a regra de cliente/interno.

@@ -1,0 +1,11 @@
+YTALSEG ERP - V75 CORRECAO PRINCIPAL
+
+Correção aplicada somente na tela principal do relatório:
+- logo do card YTALSEG restaurado para tamanho correto;
+- card YTALSEG travado sem amassar texto;
+- card Valor da Nota travado sem esticar;
+- cliente e interno não foram alterados.
+
+Scripts:
+- RODAR_TESTE_V75.ps1
+- GERAR_EXE_V75.ps1

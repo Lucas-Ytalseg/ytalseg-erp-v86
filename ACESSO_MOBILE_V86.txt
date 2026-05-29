@@ -1,0 +1,37 @@
+YTALSEG ERP V86 MOBILE COMPLETO
+
+PASSO A PASSO:
+
+1. Extraia o ZIP.
+2. Abra PowerShell na pasta extraída.
+3. Rode:
+   npm install
+
+4. Para iniciar completo, dê duplo clique em:
+   INICIAR_MOBILE_COMPLETO.bat
+
+OU manualmente:
+
+Janela 1 - Backend:
+   cd app\backend
+   python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+Janela 2 - Frontend:
+   npm run mobile
+
+5. Descubra o IP do PC:
+   ipconfig
+
+Use o IPv4 do Wi-Fi. Exemplo:
+   192.168.15.170
+
+6. No celular, no mesmo Wi-Fi, abra:
+   http://SEU-IP:5173
+
+Exemplo:
+   http://192.168.15.170:5173
+
+IMPORTANTE:
+- Se o Windows Firewall perguntar, clique em Permitir acesso.
+- Não use IP de VMware/OpenVPN. Use o IPv4 do adaptador Wi-Fi.
+- O backend agora aceita celular porque o frontend troca 127.0.0.1 pelo IP do PC automaticamente.

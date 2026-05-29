@@ -1,0 +1,17 @@
+V65 FIX LOGIN ADMIN
+
+Corrige:
+- admin / 123 volta a entrar mesmo se a base antiga de usuários estiver quebrada.
+- Se admin estiver sem senha ou inativo no localStorage, o login recria admin automaticamente.
+- Mantém botão Mostrar login padrão removido.
+
+Instalação:
+1) Extraia dentro da pasta YTALSEG-ERP.
+2) Rode:
+   powershell -ExecutionPolicy Bypass -File .\INSTALAR_V65_LOGIN.ps1
+3) Depois:
+   cd frontend
+   npm run dev
+
+Login:
+admin / 123
