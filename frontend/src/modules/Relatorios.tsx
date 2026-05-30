@@ -1413,11 +1413,6 @@ background:none;
             -webkit-appearance: none !important;
             appearance: none !important;
           }
-          /* Coluna Data mais larga para caber a data completa */
-          .obs tr.servico-row td:nth-child(1),
-          tr.servico-row td:nth-child(1) { width: 34mm !important; }
-          .obs tr.servico-row td:nth-child(3),
-          tr.servico-row td:nth-child(3) { width: 28mm !important; }
           .rascunho-status {
             display: none !important;
           }
@@ -5486,9 +5481,9 @@ body.modo-interno .ytalseg-card-final .email-line{
 
                 {servicos.map((s, i) => (
                   <tr key={i} className="servico-row">
-                    <td style={{ padding: "0 4px", verticalAlign: "middle" }}>
+                    <td style={{ padding: "0 4px", verticalAlign: "middle", width: "90px", minWidth: "90px" }}>
                       <input
-                        style={{ height: "22px", width: "100%", padding: "0 5px", fontSize: "12px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
+                        style={{ height: "22px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
                         value={s.data}
                         onChange={(e) => atualizarServico(i, "data", e.target.value)}
                       />
@@ -5500,10 +5495,10 @@ body.modo-interno .ytalseg-card-final .email-line{
                         onChange={(e) => atualizarServico(i, "descricao", e.target.value)}
                       />
                     </td>
-                    <td style={{ padding: "0 4px", verticalAlign: "middle" }}>
+                    <td style={{ padding: "0 4px", verticalAlign: "middle", width: "75px", minWidth: "75px" }}>
                       <input
                         type="number"
-                        style={{ height: "22px", width: "100%", padding: "0 5px", fontSize: "12px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
+                        style={{ height: "22px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
                         value={s.valor}
                         onChange={(e) => atualizarServico(i, "valor", e.target.value)}
                       />
