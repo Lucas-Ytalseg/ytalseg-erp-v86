@@ -3079,18 +3079,28 @@ body.modo-cliente .logo-watermark {
     width: 100% !important;
   }
 
+  body.modo-cliente .obs tr {
+    height: 5mm !important;
+    max-height: 5mm !important;
+  }
+
   body.modo-cliente .obs th,
   body.modo-cliente .obs td {
-    padding: 1px 3px !important;
-    height: 4mm !important;
+    padding: 0.5mm 2mm !important;
+    height: 5mm !important;
+    max-height: 5mm !important;
     line-height: 1 !important;
     vertical-align: middle !important;
+    box-sizing: border-box !important;
   }
   body.modo-cliente .obs input {
     height: 4mm !important;
+    max-height: 4mm !important;
+    min-height: 0 !important;
     padding: 0 1px !important;
     line-height: 1 !important;
     font-size: 7px !important;
+    box-sizing: border-box !important;
   }
   body.modo-cliente .obs th:nth-child(1),
   body.modo-cliente .obs td:nth-child(1) { width: 30mm !important; }
@@ -5448,27 +5458,30 @@ body.modo-interno .ytalseg-card-final .email-line{
                 )}
 
                 {servicos.map((s, i) => (
-                  <tr key={i}>
-                    <td>
+                  <tr key={i} className="servico-row" style={{ height: "5mm" }}>
+                    <td style={{ height: "5mm", padding: "0.5mm 2mm" }}>
                       <input
+                        style={{ height: "4mm", padding: "0 2px", fontSize: "8px", boxSizing: "border-box" }}
                         value={s.data}
                         onChange={(e) => atualizarServico(i, "data", e.target.value)}
                       />
                     </td>
-                    <td>
+                    <td style={{ height: "5mm", padding: "0.5mm 2mm" }}>
                       <input
+                        style={{ height: "4mm", padding: "0 2px", fontSize: "8px", boxSizing: "border-box" }}
                         value={s.descricao}
                         onChange={(e) => atualizarServico(i, "descricao", e.target.value)}
                       />
                     </td>
-                    <td>
+                    <td style={{ height: "5mm", padding: "0.5mm 2mm" }}>
                       <input
                         type="number"
+                        style={{ height: "4mm", padding: "0 2px", fontSize: "8px", boxSizing: "border-box" }}
                         value={s.valor}
                         onChange={(e) => atualizarServico(i, "valor", e.target.value)}
                       />
                     </td>
-                    <td>
+                    <td className="acao-col" style={{ height: "5mm", padding: "0.5mm 2mm" }}>
                       <button className="btn-red" onClick={() => removerServico(i)}>
                         Remover
                       </button>
