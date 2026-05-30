@@ -1550,6 +1550,16 @@ background:none;
         .preview-mode .obs th:last-child,
         .preview-mode .obs td:last-child{display:none;}
 
+        /* SO NA TELA: campos de servico maiores e confortaveis para editar (nao afeta o PDF) */
+        @media screen {
+          .preview-mode .obs th, .preview-mode .obs td{ height:auto !important; font-size:12px !important; padding:3px 4px !important; }
+          .preview-mode .obs input{ height:28px !important; font-size:13px !important; line-height:normal !important; padding:0 8px !important; }
+          .preview-mode .obs input.servico-data{ font-size:12px !important; }
+          .preview-mode .obs th:last-child,
+          .preview-mode .obs td:last-child{ display:table-cell !important; }
+          .preview-mode .obs h3{ font-size:15px !important; }
+        }
+
         .preview-mode .footer-final{margin-top:6px; grid-template-columns:1.05fr 1fr; gap:7px;}
         .preview-mode .ytalseg-card-final{min-height:95px; grid-template-columns:105px 1fr; border-radius:15px;}
         .preview-mode .logo-area-final{border-top-right-radius:45px; border-bottom-right-radius:45px;}
