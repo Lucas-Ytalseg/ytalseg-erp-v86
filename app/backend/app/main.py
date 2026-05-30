@@ -861,5 +861,14 @@ async def upload_pdf(
             "erro": str(e),
             "tipo": type(e).__name__
         }
-
-app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+# Servir index.html para rotas não encontradas
+@app.get("/{full_path:path}")
+async def serve_static(full_path: str):
+    static_file = Path(__file__).parent / "static" / full_path
+    if static_file.exists() and static_file.is_file():
+        return FileResponse(static_file)
+    # Se não encontrar, retorna index.html (para SPA)
+    index = Path(__file__).parent / "static" / "index.html"
+    if index.exists():
+        return FileResponse(index, media_type="text/html")
+    return {"error": "Not found"}
