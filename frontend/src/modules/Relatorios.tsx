@@ -1408,7 +1408,8 @@ background:none;
             padding: 0 3px !important;
             line-height: 1 !important;
             font-size: 9.5px !important;
-            border: 1px solid #ccc !important;
+            border: none !important;
+            background: transparent !important;
             box-sizing: border-box !important;
             -webkit-appearance: none !important;
             appearance: none !important;
@@ -5498,14 +5499,14 @@ body.modo-interno .ytalseg-card-final .email-line{
                     <td style={{ padding: "0 2px", verticalAlign: "middle", width: "95px", minWidth: "95px" }}>
                       <input
                         className="servico-data"
-                        style={{ height: "22px", width: "100%", minWidth: "90px", padding: "0 2px", fontSize: "8px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent", textAlign: "center" }}
+                        style={{ height: "22px", width: "100%", minWidth: "90px", padding: "0 2px", fontSize: "8px", boxSizing: "border-box", border: "none", background: "transparent", textAlign: "center" }}
                         value={s.data}
                         onChange={(e) => atualizarServico(i, "data", e.target.value)}
                       />
                     </td>
                     <td style={{ padding: "0 4px", verticalAlign: "middle" }}>
                       <input
-                        style={{ height: "22px", width: "100%", padding: "0 5px", fontSize: "12px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
+                        style={{ height: "22px", width: "100%", padding: "0 5px", fontSize: "12px", boxSizing: "border-box", border: "none", background: "transparent" }}
                         value={s.descricao}
                         onChange={(e) => atualizarServico(i, "descricao", e.target.value)}
                       />
@@ -5513,7 +5514,7 @@ body.modo-interno .ytalseg-card-final .email-line{
                     <td style={{ padding: "0 4px", verticalAlign: "middle", width: "75px", minWidth: "75px" }}>
                       <input
                         type="number"
-                        style={{ height: "22px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
+                        style={{ height: "22px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "none", background: "transparent" }}
                         value={s.valor}
                         onChange={(e) => atualizarServico(i, "valor", e.target.value)}
                       />
