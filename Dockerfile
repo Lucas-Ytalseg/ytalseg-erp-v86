@@ -5,14 +5,12 @@ WORKDIR /app
 RUN apt-get update && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt uvicorn
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
 ENV PYTHONUNBUFFERED=1
 
-RUN chmod +x entrypoint.sh
-
 EXPOSE 8000
 
-CMD ["./entrypoint.sh"]
+CMD ["python", "-m", "uvicorn", "app.backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
