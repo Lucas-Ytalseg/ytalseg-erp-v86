@@ -1490,15 +1490,10 @@ background:none;
         .preview-mode .panel{margin-bottom:5px;}
         .preview-mode .panel-title{font-size:9px; padding:4px;}
 
-        .preview-mode .obs{margin-top:4px; padding:4px;}
+        .preview-mode .obs{margin-top:5px; padding:5px;}
         .preview-mode .obs h3{font-size:9px; margin-bottom:1px;}
-        .preview-mode .obs p{font-size:7px; margin:1px 0 2px;}
-        .preview-mode .obs input{border:none; padding:0 1px; font-size:7px; line-height:1.05; background:transparent !important;}
-        .preview-mode .obs table{border-collapse:collapse; table-layout:fixed; width:100%;}
-        .preview-mode .obs th, .preview-mode .obs td{padding:0 2px !important; height:9px !important; line-height:1 !important; font-size:6.5px !important; vertical-align:middle !important;}
-        .preview-mode .obs input{height:9px !important; line-height:1 !important;}
-        .preview-mode .obs th:nth-child(1), .preview-mode .obs td:nth-child(1){width:52px !important;}
-        .preview-mode .obs th:nth-child(3), .preview-mode .obs td:nth-child(3){width:58px !important;}
+        .preview-mode .obs p{font-size:7px; margin:2px 0 3px;}
+        .preview-mode .obs input{border:none; padding:1px; font-size:7px; background:transparent !important;}
         .preview-mode .obs th:last-child,
         .preview-mode .obs td:last-child{display:none;}
 
@@ -2754,8 +2749,8 @@ background:none;
   }
 
   .obs {
-    margin-top: 4px;
-    padding: 4px;
+    margin-top: 5px;
+    padding: 5px;
   }
 
   .obs h3 {
@@ -2765,42 +2760,15 @@ background:none;
 
   .obs p {
     font-size: 7px;
-    margin: 1px 0 2px;
+    margin: 2px 0 3px;
   }
 
   .obs input {
     border: none;
-    padding: 0 1px;
+    padding: 1px;
     font-size: 7px;
-    line-height: 1.05;
     background: transparent !important;
   }
-
-  /* Compacta as linhas da tabela de serviços (cabe até 6 linhas na A4) */
-  .obs table {
-    border-collapse: collapse;
-    table-layout: fixed;
-    width: 100%;
-  }
-  .obs th,
-  .obs td {
-    padding: 0 2px !important;
-    height: 9px !important;
-    line-height: 1 !important;
-    font-size: 6.5px !important;
-    vertical-align: middle !important;
-  }
-  .obs input {
-    height: 9px !important;
-    line-height: 1 !important;
-  }
-  /* Data e Valor bem estreitas; Descrição fica com todo o resto */
-  .obs th:nth-child(1),
-  .obs td:nth-child(1) { width: 52px !important; }
-  .obs th:nth-child(2),
-  .obs td:nth-child(2) { width: auto !important; }
-  .obs th:nth-child(3),
-  .obs td:nth-child(3) { width: 58px !important; }
 
   .obs th:last-child,
   .obs td:last-child {
@@ -3043,24 +3011,24 @@ body.modo-cliente .logo-watermark {
   }
 
   body.modo-cliente .grid > div:last-child .panel:not(.tabela-valores) table {
-    font-size: 11px !important;
+    font-size: 10px !important;
   }
 
   body.modo-cliente .grid > div:last-child .panel:not(.tabela-valores) td {
-    padding: 7px 8px !important;
-    height: 9.5mm !important;
+    padding: 6px 8px !important;
+    height: 8.5mm !important;
   }
 
   body.modo-cliente .grid > div:last-child .panel:not(.tabela-valores) tr.total-row td {
-    font-size: 12px !important;
-    height: 10.5mm !important;
+    font-size: 11px !important;
+    height: 9.5mm !important;
   }
 
   body.modo-cliente .obs {
     margin-top: 0 !important;
     margin-bottom: auto !important;
-    padding: 5px !important;
-    min-height: 0 !important;
+    padding: 8px !important;
+    min-height: 32mm !important;
     border-radius: 12px !important;
   }
 
@@ -3070,32 +3038,18 @@ body.modo-cliente .logo-watermark {
 
   body.modo-cliente .obs p {
     font-size: 8px !important;
-    margin-bottom: 3px !important;
+    margin-bottom: 5px !important;
   }
 
   body.modo-cliente .obs table {
-    font-size: 7px !important;
-    table-layout: fixed !important;
-    width: 100% !important;
+    font-size: 9px !important;
   }
 
   body.modo-cliente .obs th,
   body.modo-cliente .obs td {
-    padding: 1px 3px !important;
-    height: 4mm !important;
-    line-height: 1 !important;
-    vertical-align: middle !important;
+    padding: 5px !important;
+    height: 7mm !important;
   }
-  body.modo-cliente .obs input {
-    height: 4mm !important;
-    padding: 0 1px !important;
-    line-height: 1 !important;
-    font-size: 7px !important;
-  }
-  body.modo-cliente .obs th:nth-child(1),
-  body.modo-cliente .obs td:nth-child(1) { width: 22mm !important; }
-  body.modo-cliente .obs th:nth-child(3),
-  body.modo-cliente .obs td:nth-child(3) { width: 24mm !important; }
 
   body.modo-cliente .footer-final {
     margin-top: auto !important;
@@ -3297,9 +3251,8 @@ body.modo-cliente .logo-watermark {
 
           .obs th,
           .obs td {
-            padding: 1px 3px !important;
-            height: 4mm !important;
-            line-height: 1 !important;
+            padding: 2px 3px !important;
+            height: auto !important;
           }
 
           .footer-final {
