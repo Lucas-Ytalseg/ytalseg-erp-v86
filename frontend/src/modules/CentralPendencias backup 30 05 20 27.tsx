@@ -72,56 +72,6 @@ export default function CentralPendencias() {
     carregar();
   }, []);
 
-  function excluirPendencia(pendenciaId: string) {
-    const ok = window.confirm("Tem certeza que deseja excluir esta pendência? Esta ação não pode ser desfeita.");
-    if (!ok) return;
-
-    try {
-      if (pendenciaId.startsWith("rel-")) {
-        const realId = pendenciaId.replace("rel-", "");
-        const lista = JSON.parse(localStorage.getItem(REL_KEY) || "[]");
-        const nova = (Array.isArray(lista) ? lista : []).filter((r: Relatorio) => String(r.id) !== realId);
-        localStorage.setItem(REL_KEY, JSON.stringify(nova));
-      } else if (pendenciaId.startsWith("pac-")) {
-        const realId = pendenciaId.replace("pac-", "");
-        const lista = JSON.parse(localStorage.getItem(PACOTE_KEY) || "[]");
-        const nova = (Array.isArray(lista) ? lista : []).filter((p: Pacote) => String(p.id) !== realId);
-        localStorage.setItem(PACOTE_KEY, JSON.stringify(nova));
-      }
-      carregar();
-    } catch {
-      window.alert("Não foi possível excluir a pendência.");
-    }
-  }
-
-  function limparTodas() {
-    const ok = window.confirm(
-      `Tem certeza que deseja EXCLUIR TODAS as ${filtradas.length} pendências listadas? Esta ação não pode ser desfeita.`
-    );
-    if (!ok) return;
-
-    try {
-      // Remove apenas os relatorios/pacotes que estao pendentes (mantem os "Pago"/"Concluido")
-      const idsParaRemover = new Set(filtradas.map((p) => p.id));
-
-      const listaRel = JSON.parse(localStorage.getItem(REL_KEY) || "[]");
-      const novaRel = (Array.isArray(listaRel) ? listaRel : []).filter(
-        (r: Relatorio) => !idsParaRemover.has(`rel-${r.id}`)
-      );
-      localStorage.setItem(REL_KEY, JSON.stringify(novaRel));
-
-      const listaPac = JSON.parse(localStorage.getItem(PACOTE_KEY) || "[]");
-      const novaPac = (Array.isArray(listaPac) ? listaPac : []).filter(
-        (p: Pacote) => !idsParaRemover.has(`pac-${p.id}`)
-      );
-      localStorage.setItem(PACOTE_KEY, JSON.stringify(novaPac));
-
-      carregar();
-    } catch {
-      window.alert("Não foi possível limpar as pendências.");
-    }
-  }
-
   const pendencias = useMemo<Pendencia[]>(() => {
     const lista: Pendencia[] = [];
 
@@ -204,18 +154,15 @@ export default function CentralPendencias() {
         .pend-actions { display: flex; gap: 8px; flex-wrap: wrap; }
         .pend-select, .pend-btn { border: 1px solid #d1d5db; border-radius: 10px; padding: 10px 12px; font-size: 13px; font-weight: 900; background: white; }
         .pend-btn { border: 0; cursor: pointer; background: #00B050; color: white; }
-        .pend-btn-danger { border: 0; cursor: pointer; background: #dc2626; color: white; border-radius: 10px; padding: 10px 12px; font-size: 13px; font-weight: 900; }
         .pend-cards { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; }
         .pend-card, .pend-box { background: white; border: 1px solid #e5e7eb; border-radius: 18px; padding: 16px; box-shadow: 0 10px 22px rgba(0,0,0,.05); }
         .pend-card span { display: block; color: #6b7280; font-size: 12px; font-weight: 1000; text-transform: uppercase; }
         .pend-card strong { display: block; margin-top: 6px; color: #00B050; font-size: 26px; font-weight: 1000; }
         .pend-list { display: grid; gap: 10px; }
-        .pend-item { background: white; border: 1px solid #e5e7eb; border-radius: 18px; padding: 16px; box-shadow: 0 10px 22px rgba(0,0,0,.05); display: grid; grid-template-columns: 1.4fr .7fr .7fr 1.2fr auto; gap: 12px; align-items: center; }
+        .pend-item { background: white; border: 1px solid #e5e7eb; border-radius: 18px; padding: 16px; box-shadow: 0 10px 22px rgba(0,0,0,.05); display: grid; grid-template-columns: 1.4fr .8fr .8fr 1.4fr; gap: 12px; align-items: center; }
         .pend-item h3 { margin: 0; color: #111827; font-size: 17px; font-weight: 1000; }
         .pend-item small { display: block; margin-top: 4px; color: #6b7280; font-weight: 800; }
         .pend-badge { display: inline-flex; justify-content: center; padding: 6px 10px; border-radius: 999px; background: #fff7ed; color: #9a3412; font-size: 12px; font-weight: 1000; }
-        .pend-del { border: 0; cursor: pointer; background: #fee2e2; color: #b91c1c; border-radius: 10px; padding: 8px 14px; font-size: 12px; font-weight: 1000; white-space: nowrap; }
-        .pend-del:hover { background: #fecaca; }
         .pend-empty { color: #6b7280; font-weight: 900; padding: 16px; }
         @media (max-width: 1000px) {
           .pend-cards { grid-template-columns: 1fr 1fr; }
@@ -238,9 +185,6 @@ export default function CentralPendencias() {
             <option>Pacote</option>
           </select>
           <button className="pend-btn" onClick={carregar}>Atualizar</button>
-          {filtradas.length > 0 && (
-            <button className="pend-btn-danger" onClick={limparTodas}>Limpar todas</button>
-          )}
         </div>
       </div>
 
@@ -265,9 +209,6 @@ export default function CentralPendencias() {
             <div>{brl(p.valor)}</div>
             <div><span className="pend-badge">{p.status}</span></div>
             <div>{p.motivo}</div>
-            <div>
-              <button className="pend-del" onClick={() => excluirPendencia(p.id)}>Excluir</button>
-            </div>
           </div>
         ))}
       </div>
