@@ -15,7 +15,7 @@
     "dev-local": "vite --host 127.0.0.1 --port 5173"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "latest",
+    "@vitejs/plugin-react": "4.3.4",
     "lucide-react": "latest",
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -24,7 +24,8 @@
   },
   "devDependencies": {
     "electron": "^28.3.3",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "terser": "^5.48.0"
   },
   "build": {
     "appId": "br.com.ytalseg.erp",

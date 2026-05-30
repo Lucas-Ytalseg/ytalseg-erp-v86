@@ -16,6 +16,19 @@ import uuid
 
 app = FastAPI(title="YTALSEG Backend", version="8.0.0 PROFISSIONAL")
 
+# ===== PREFIXO /api =====
+# O frontend chama as rotas com prefixo /api (ex: /api/financeiro).
+# As rotas do backend sao definidas sem o prefixo (ex: /financeiro).
+# Este middleware remove o /api do caminho antes do roteamento, de forma
+# que tanto /financeiro quanto /api/financeiro funcionem.
+@app.middleware("http")
+async def remover_prefixo_api(request, call_next):
+    if request.scope["path"].startswith("/api/"):
+        request.scope["path"] = request.scope["path"][4:]  # remove "/api"
+    elif request.scope["path"] == "/api":
+        request.scope["path"] = "/"
+    return await call_next(request)
+
 # ===== CORS MIDDLEWARE (FIXED) =====
 app.add_middleware(
     CORSMiddleware,
