@@ -1391,6 +1391,28 @@ background:none;
         }
 
         @media print {
+          /* FORCA linhas de servico compactas na impressao (vence input height:35px global) */
+          .obs tr.servico-row td,
+          tr.servico-row td {
+            height: 6mm !important;
+            max-height: 6mm !important;
+            padding: 0 4px !important;
+            line-height: 1 !important;
+            vertical-align: middle !important;
+          }
+          .obs tr.servico-row input,
+          tr.servico-row input {
+            height: 5mm !important;
+            max-height: 5mm !important;
+            min-height: 0 !important;
+            padding: 0 3px !important;
+            line-height: 1 !important;
+            font-size: 9px !important;
+            border: 1px solid #ccc !important;
+            box-sizing: border-box !important;
+            -webkit-appearance: none !important;
+            appearance: none !important;
+          }
           .rascunho-status {
             display: none !important;
           }
