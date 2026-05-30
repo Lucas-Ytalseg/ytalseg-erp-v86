@@ -1541,6 +1541,7 @@ background:none;
         .preview-mode .obs p{font-size:7px; margin:1px 0 2px;}
         .preview-mode .obs input{border:1px solid #ccc; border-radius:6px; padding:0 1px; font-size:7px; line-height:1.05; background:transparent !important;}
         .preview-mode .obs input.servico-data{font-size:6.5px !important; text-align:center !important; letter-spacing:-0.2px !important;}
+        .preview-mode .obs input.servico-valor{text-align:center !important;}
         .preview-mode .obs table{border-collapse:collapse; table-layout:fixed; width:100%;}
         .preview-mode .obs th, .preview-mode .obs td{padding:0 2px !important; height:9px !important; line-height:1 !important; font-size:6.5px !important; vertical-align:middle !important; border:none !important;}
         .preview-mode .obs input{height:9px !important; line-height:1 !important;}
@@ -5508,14 +5509,14 @@ body.modo-interno .ytalseg-card-final .email-line{
                     <td style={{ padding: "0 2px", verticalAlign: "middle", width: "95px", minWidth: "95px", overflow: "hidden" }}>
                       <input
                         className="servico-data"
-                        style={{ height: "22px", width: "100%", padding: "0 2px", fontSize: "9px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "6px", background: "transparent", textAlign: "center" }}
+                        style={{ height: "28px", width: "100%", padding: "0 4px", fontSize: "12px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "6px", background: "transparent", textAlign: "center" }}
                         value={s.data}
                         onChange={(e) => atualizarServico(i, "data", e.target.value)}
                       />
                     </td>
                     <td style={{ padding: "0 4px", verticalAlign: "middle", overflow: "hidden" }}>
                       <input
-                        style={{ height: "22px", width: "100%", padding: "0 5px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "6px", background: "transparent" }}
+                        style={{ height: "28px", width: "100%", padding: "0 8px", fontSize: "13px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "6px", background: "transparent" }}
                         value={s.descricao}
                         onChange={(e) => atualizarServico(i, "descricao", e.target.value)}
                       />
@@ -5523,7 +5524,8 @@ body.modo-interno .ytalseg-card-final .email-line{
                     <td style={{ padding: "0 4px", verticalAlign: "middle", width: "75px", minWidth: "75px", overflow: "hidden" }}>
                       <input
                         type="number"
-                        style={{ height: "22px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "6px", background: "transparent" }}
+                        className="servico-valor"
+                        style={{ height: "28px", width: "100%", padding: "0 4px", fontSize: "12px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "6px", background: "transparent", textAlign: "center" }}
                         value={s.valor}
                         onChange={(e) => atualizarServico(i, "valor", e.target.value)}
                       />
