@@ -5,7 +5,6 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from datetime import datetime
 import re
-import fitz
 import json
 import os
 import shutil
@@ -32,7 +31,10 @@ try:
 except NameError:
     BASE_DIR = Path.cwd()
 
-DATA_DIR = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "YTALSEG"
+# Ordem de prioridade: DATA_DIR (Railway/produção) > LOCALAPPDATA (Windows) > home
+# No Railway, defina a env var DATA_DIR para um volume persistente, ex: /data
+_base_data = os.getenv("DATA_DIR") or os.getenv("LOCALAPPDATA") or str(Path.home())
+DATA_DIR = Path(_base_data) / "YTALSEG"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 UPLOAD_DIR = DATA_DIR / "uploads"
