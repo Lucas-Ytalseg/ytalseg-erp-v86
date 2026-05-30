@@ -14,4 +14,4 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["python", "-c", "import os; import uvicorn; port = int(os.getenv('PORT', 8000)); uvicorn.run('app.main:app', host='0.0.0.0', port=port)"]
