@@ -863,12 +863,21 @@ async def upload_pdf(
             "tipo": type(e).__name__
         }
 # Servir index.html para rotas não encontradas
+@app.get("/")
+async def root():
+    index = Path(__file__).parent / "static" / "index.html"
+    if index.exists():
+        return FileResponse(index, media_type="text/html")
+    return {"status": "ok"}
+
 @app.get("/{full_path:path}")
-async def serve_static(full_path: str):
-    static_file = Path(__file__).parent / "static" / full_path
-    if static_file.exists() and static_file.is_file():
-        return FileResponse(static_file)
-    # Se não encontrar, retorna index.html (para SPA)
+async def serve_spa(full_path: str):
+    # Se for arquivo (tem extensão), tenta servir
+    if "." in full_path:
+        static_file = Path(__file__).parent / "static" / full_path
+        if static_file.exists() and static_file.is_file():
+            return FileResponse(static_file)
+    # Se não, retorna index.html (para SPA)
     index = Path(__file__).parent / "static" / "index.html"
     if index.exists():
         return FileResponse(index, media_type="text/html")
