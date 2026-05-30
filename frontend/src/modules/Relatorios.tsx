@@ -1416,9 +1416,10 @@ background:none;
           /* Campo data: fonte menor e centralizado para caber 30/05/2026 */
           .obs tr.servico-row input.servico-data,
           tr.servico-row input.servico-data {
-            font-size: 7.5px !important;
+            font-size: 6px !important;
             padding: 0 1px !important;
             text-align: center !important;
+            letter-spacing: -0.2px !important;
           }
           .rascunho-status {
             display: none !important;
@@ -2169,7 +2170,7 @@ background:none;
 
        @page {
   size: A4 portrait;
-  margin: 4mm;
+  margin: 2mm;
 }
 
 @media print {
@@ -3529,7 +3530,7 @@ body.modo-cliente .logo-watermark {
         .preview-mode .panel { margin-bottom: 3px !important; }
         .preview-mode .footer-final { margin-top: 4px !important; }
 
-        @page { size: A4 portrait; margin: 3mm !important; }
+        @page { size: A4 portrait; margin: 2mm !important; }
 
         @media print {
           .page, .preview-mode { padding: 0 !important; background: #fff !important; }
@@ -5488,10 +5489,10 @@ body.modo-interno .ytalseg-card-final .email-line{
 
                 {servicos.map((s, i) => (
                   <tr key={i} className="servico-row">
-                    <td style={{ padding: "0 2px", verticalAlign: "middle", width: "62px", minWidth: "62px" }}>
+                    <td style={{ padding: "0 2px", verticalAlign: "middle", width: "80px", minWidth: "80px" }}>
                       <input
                         className="servico-data"
-                        style={{ height: "22px", width: "100%", padding: "0 2px", fontSize: "9px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent", textAlign: "center" }}
+                        style={{ height: "22px", width: "100%", padding: "0 2px", fontSize: "8px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent", textAlign: "center" }}
                         value={s.data}
                         onChange={(e) => atualizarServico(i, "data", e.target.value)}
                       />
