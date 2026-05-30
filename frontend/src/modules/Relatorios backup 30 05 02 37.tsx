@@ -1397,12 +1397,6 @@ background:none;
           .ytalseg-pdf-viewer-overlay {
             display: none !important;
           }
-          /* Remove a barra de ferramentas (faixa cinza) na impressão */
-          .screen-toolbar,
-          .toolbar-grid,
-          .action-group {
-            display: none !important;
-          }
           
           /* Evita quebras de página desnecessárias */
           .sheet {
