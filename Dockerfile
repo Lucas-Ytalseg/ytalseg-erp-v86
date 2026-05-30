@@ -2,7 +2,7 @@ FROM node:18-alpine as frontend-builder
 
 WORKDIR /app/frontend
 
-COPY frontend/package.json frontend/package-lock.json ./
+COPY frontend/package.json ./
 
 RUN npm install --legacy-peer-deps
 
