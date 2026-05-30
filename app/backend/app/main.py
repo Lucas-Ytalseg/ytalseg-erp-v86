@@ -21,7 +21,6 @@ app.add_middleware(
 # Servir arquivos estáticos do frontend
 static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
@@ -862,3 +861,5 @@ async def upload_pdf(
             "erro": str(e),
             "tipo": type(e).__name__
         }
+
+app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
