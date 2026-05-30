@@ -1539,13 +1539,12 @@ background:none;
         .preview-mode .obs{margin-top:4px; padding:4px;}
         .preview-mode .obs h3{font-size:9px; margin-bottom:1px;}
         .preview-mode .obs p{font-size:7px; margin:1px 0 2px;}
-        .preview-mode .obs input{border:1px solid #ccc; border-radius:6px; padding:0 1px; font-size:7px; line-height:1.05; background:transparent !important;}
-        .preview-mode .obs input.servico-data{font-size:6.5px !important; text-align:center !important; letter-spacing:-0.2px !important;}
+        .preview-mode .obs input{border:none; padding:0 1px; font-size:7px; line-height:1.05; background:transparent !important;}
         .preview-mode .obs table{border-collapse:collapse; table-layout:fixed; width:100%;}
-        .preview-mode .obs th, .preview-mode .obs td{padding:0 2px !important; height:9px !important; line-height:1 !important; font-size:6.5px !important; vertical-align:middle !important; border:none !important;}
+        .preview-mode .obs th, .preview-mode .obs td{padding:0 2px !important; height:9px !important; line-height:1 !important; font-size:6.5px !important; vertical-align:middle !important;}
         .preview-mode .obs input{height:9px !important; line-height:1 !important;}
-        .preview-mode .obs th:nth-child(1), .preview-mode .obs td:nth-child(1){width:26mm !important;}
-        .preview-mode .obs th:nth-child(3), .preview-mode .obs td:nth-child(3){width:18mm !important;}
+        .preview-mode .obs th:nth-child(1), .preview-mode .obs td:nth-child(1){width:52px !important;}
+        .preview-mode .obs th:nth-child(3), .preview-mode .obs td:nth-child(3){width:58px !important;}
         .preview-mode .obs th:last-child,
         .preview-mode .obs td:last-child{display:none;}
 
