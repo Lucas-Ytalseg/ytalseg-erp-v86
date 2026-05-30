@@ -1407,12 +1407,17 @@ background:none;
             min-height: 0 !important;
             padding: 0 3px !important;
             line-height: 1 !important;
-            font-size: 9px !important;
+            font-size: 9.5px !important;
             border: 1px solid #ccc !important;
             box-sizing: border-box !important;
             -webkit-appearance: none !important;
             appearance: none !important;
           }
+          /* Coluna Data mais larga para caber a data completa */
+          .obs tr.servico-row td:nth-child(1),
+          tr.servico-row td:nth-child(1) { width: 34mm !important; }
+          .obs tr.servico-row td:nth-child(3),
+          tr.servico-row td:nth-child(3) { width: 28mm !important; }
           .rascunho-status {
             display: none !important;
           }
@@ -5483,14 +5488,14 @@ body.modo-interno .ytalseg-card-final .email-line{
                   <tr key={i} className="servico-row">
                     <td style={{ padding: "0 4px", verticalAlign: "middle" }}>
                       <input
-                        style={{ height: "18px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
+                        style={{ height: "22px", width: "100%", padding: "0 5px", fontSize: "12px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
                         value={s.data}
                         onChange={(e) => atualizarServico(i, "data", e.target.value)}
                       />
                     </td>
                     <td style={{ padding: "0 4px", verticalAlign: "middle" }}>
                       <input
-                        style={{ height: "18px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
+                        style={{ height: "22px", width: "100%", padding: "0 5px", fontSize: "12px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
                         value={s.descricao}
                         onChange={(e) => atualizarServico(i, "descricao", e.target.value)}
                       />
@@ -5498,7 +5503,7 @@ body.modo-interno .ytalseg-card-final .email-line{
                     <td style={{ padding: "0 4px", verticalAlign: "middle" }}>
                       <input
                         type="number"
-                        style={{ height: "18px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
+                        style={{ height: "22px", width: "100%", padding: "0 5px", fontSize: "12px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
                         value={s.valor}
                         onChange={(e) => atualizarServico(i, "valor", e.target.value)}
                       />
