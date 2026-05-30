@@ -9,6 +9,8 @@ import os
 import shutil
 import sqlite3
 import calendar
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -16,6 +18,10 @@ app = FastAPI(title="YTALSEG Backend", version="8.0.0 PROFISSIONAL")
 
 app.add_middleware(
     CORSMiddleware,
+# Servir arquivos estáticos do frontend
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
