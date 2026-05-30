@@ -2796,11 +2796,11 @@ background:none;
   }
   /* Data e Valor bem estreitas; Descrição fica com todo o resto */
   .obs th:nth-child(1),
-  .obs td:nth-child(1) { width: 52px !important; }
+  .obs td:nth-child(1) { width: 30mm !important; }
   .obs th:nth-child(2),
   .obs td:nth-child(2) { width: auto !important; }
   .obs th:nth-child(3),
-  .obs td:nth-child(3) { width: 58px !important; }
+  .obs td:nth-child(3) { width: 30mm !important; }
 
   .obs th:last-child,
   .obs td:last-child {
@@ -3093,9 +3093,9 @@ body.modo-cliente .logo-watermark {
     font-size: 7px !important;
   }
   body.modo-cliente .obs th:nth-child(1),
-  body.modo-cliente .obs td:nth-child(1) { width: 22mm !important; }
+  body.modo-cliente .obs td:nth-child(1) { width: 30mm !important; }
   body.modo-cliente .obs th:nth-child(3),
-  body.modo-cliente .obs td:nth-child(3) { width: 24mm !important; }
+  body.modo-cliente .obs td:nth-child(3) { width: 30mm !important; }
 
   body.modo-cliente .footer-final {
     margin-top: auto !important;
