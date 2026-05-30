@@ -1399,6 +1399,13 @@ background:none;
             padding: 0 4px !important;
             line-height: 1 !important;
             vertical-align: middle !important;
+            border: none !important;
+            overflow: hidden !important;
+          }
+          /* Tabela de servicos sem grade de fundo e com largura fixa */
+          .obs table {
+            table-layout: fixed !important;
+            border-collapse: collapse !important;
           }
           .obs tr.servico-row input,
           tr.servico-row input {
@@ -1408,7 +1415,8 @@ background:none;
             padding: 0 3px !important;
             line-height: 1 !important;
             font-size: 9.5px !important;
-            border: none !important;
+            border: 1px solid #ccc !important;
+            border-radius: 6px !important;
             background: transparent !important;
             box-sizing: border-box !important;
             -webkit-appearance: none !important;
@@ -5496,25 +5504,25 @@ body.modo-interno .ytalseg-card-final .email-line{
 
                 {servicos.map((s, i) => (
                   <tr key={i} className="servico-row">
-                    <td style={{ padding: "0 2px", verticalAlign: "middle", width: "95px", minWidth: "95px" }}>
+                    <td style={{ padding: "0 2px", verticalAlign: "middle", width: "95px", minWidth: "95px", overflow: "hidden" }}>
                       <input
                         className="servico-data"
-                        style={{ height: "22px", width: "100%", minWidth: "90px", padding: "0 2px", fontSize: "8px", boxSizing: "border-box", border: "none", background: "transparent", textAlign: "center" }}
+                        style={{ height: "22px", width: "100%", padding: "0 2px", fontSize: "9px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "6px", background: "transparent", textAlign: "center" }}
                         value={s.data}
                         onChange={(e) => atualizarServico(i, "data", e.target.value)}
                       />
                     </td>
-                    <td style={{ padding: "0 4px", verticalAlign: "middle" }}>
+                    <td style={{ padding: "0 4px", verticalAlign: "middle", overflow: "hidden" }}>
                       <input
-                        style={{ height: "22px", width: "100%", padding: "0 5px", fontSize: "12px", boxSizing: "border-box", border: "none", background: "transparent" }}
+                        style={{ height: "22px", width: "100%", padding: "0 5px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "6px", background: "transparent" }}
                         value={s.descricao}
                         onChange={(e) => atualizarServico(i, "descricao", e.target.value)}
                       />
                     </td>
-                    <td style={{ padding: "0 4px", verticalAlign: "middle", width: "75px", minWidth: "75px" }}>
+                    <td style={{ padding: "0 4px", verticalAlign: "middle", width: "75px", minWidth: "75px", overflow: "hidden" }}>
                       <input
                         type="number"
-                        style={{ height: "22px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "none", background: "transparent" }}
+                        style={{ height: "22px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "6px", background: "transparent" }}
                         value={s.valor}
                         onChange={(e) => atualizarServico(i, "valor", e.target.value)}
                       />
