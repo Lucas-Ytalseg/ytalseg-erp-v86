@@ -1413,6 +1413,13 @@ background:none;
             -webkit-appearance: none !important;
             appearance: none !important;
           }
+          /* Campo data: fonte menor e centralizado para caber 30/05/2026 */
+          .obs tr.servico-row input.servico-data,
+          tr.servico-row input.servico-data {
+            font-size: 7.5px !important;
+            padding: 0 1px !important;
+            text-align: center !important;
+          }
           .rascunho-status {
             display: none !important;
           }
@@ -5481,9 +5488,10 @@ body.modo-interno .ytalseg-card-final .email-line{
 
                 {servicos.map((s, i) => (
                   <tr key={i} className="servico-row">
-                    <td style={{ padding: "0 4px", verticalAlign: "middle", width: "90px", minWidth: "90px" }}>
+                    <td style={{ padding: "0 2px", verticalAlign: "middle", width: "62px", minWidth: "62px" }}>
                       <input
-                        style={{ height: "22px", width: "100%", padding: "0 4px", fontSize: "11px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent" }}
+                        className="servico-data"
+                        style={{ height: "22px", width: "100%", padding: "0 2px", fontSize: "9px", boxSizing: "border-box", border: "1px solid #ccc", borderRadius: "4px", background: "transparent", textAlign: "center" }}
                         value={s.data}
                         onChange={(e) => atualizarServico(i, "data", e.target.value)}
                       />
