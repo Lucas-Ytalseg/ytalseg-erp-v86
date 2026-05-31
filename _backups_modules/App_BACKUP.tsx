@@ -1,4 +1,4 @@
-﻿// YTALSEG ERP - V51 FINAL CONSOLIDADA
+// YTALSEG ERP - V51 FINAL CONSOLIDADA
 // Base consolidada a partir do App.tsx atual enviado.
 // Foco: estabilidade, menu limpo, permissões sem duplicações e zero bugs de merge com | em JSX.
 
@@ -211,27 +211,27 @@ export default function App() {
     {
       titulo: "Principal",
       icone: "🏠",
-      ids: ["dashboard"],
+      ids: ["dashboard", "dashboard-operacional", "dashboard-graficos", "dashboardpro-v39"],
     },
     {
       titulo: "Operação",
       icone: "📁",
-      ids: ["relatorios", "historico-pdfs", "pacote-cliente", "pendencias", "envio-completo-v25", "fluxo-automatico", "operacional"],
+      ids: ["relatorios", "historico-pdfs", "pacote-cliente", "pendencias", "envio", "envio-real", "envio-pdf-real", "envio-real-v24", "envio-completo-v25", "fluxo-automatico", "operacional"],
     },
     {
       titulo: "Gestão",
       icone: "👥",
-      ids: ["clientes", "financeiro", "equipe", "notafiscal", "permissoes"],
+      ids: ["clientes", "financeiro", "equipe", "notafiscal", "usuarios-v33", "permissoes", "multi-v29", "acesso-v30"],
     },
     {
       titulo: "Dados e Segurança",
       icone: "💾",
-      ids: ["banco-local", "backup"],
+      ids: ["banco-local", "banco-v27", "backup", "backup-v41", "persistencia-v36", "cloudreal-status-v45-1", "api-real-v46"],
     },
     {
       titulo: "Sistema",
       icone: "🛠️",
-      ids: ["config-sistema", "auditoria", "configuracoes"],
+      ids: ["auditoria", "auditoria-v28", "auditoria-v50", "logs-v40", "notificacoes", "notificacoes-v35", "alertas-v37", "monitoramento-v38", "diagnostico-v47", "performance-v48", "limpeza-v49", "config-sistema", "configuracoes", "dashboard-v26"],
     },
   ];
 
