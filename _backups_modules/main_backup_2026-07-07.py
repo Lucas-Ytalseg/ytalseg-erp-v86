@@ -111,38 +111,6 @@ def obter_empresa(empresa_id: str):
     empresas = carregar_empresas()
     return empresas.get(empresa_id) or empresas.get("geoambiental") or list(empresas.values())[0]
 
-# ===== MÊS/ANO DE REFERÊNCIA (competência) =====
-MESES_PT = {
-    "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4,
-    "maio": 5, "junho": 6, "julho": 7, "agosto": 8, "setembro": 9,
-    "outubro": 10, "novembro": 11, "dezembro": 12,
-}
-
-def parse_mes_ano_referencia(referencia: str, fallback_data: str = ""):
-    """Extrai mês/ano de competência de um texto livre (ex: 'Junho / 2026').
-    Se não conseguir, usa o mês/ano da data informada como fallback."""
-    texto = (referencia or "").lower()
-    mes_encontrado = None
-    for nome, numero in MESES_PT.items():
-        if nome in texto:
-            mes_encontrado = numero
-            break
-    ano_match = re.search(r"(20\d{2})", texto)
-    ano_encontrado = int(ano_match.group(1)) if ano_match else None
-
-    if mes_encontrado and ano_encontrado:
-        return mes_encontrado, ano_encontrado
-
-    try:
-        if fallback_data:
-            d = datetime.fromisoformat(fallback_data[:10])
-            return mes_encontrado or d.month, ano_encontrado or d.year
-    except Exception:
-        pass
-
-    hoje = datetime.now()
-    return mes_encontrado or hoje.month, ano_encontrado or hoje.year
-
 # ===== DATABASE =====
 def conectar_db():
     conn = sqlite3.connect(DB_PATH)
@@ -178,48 +146,6 @@ def init_db():
             validade TEXT
         )
     """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS historico_pdfs (
-            id TEXT PRIMARY KEY,
-            tipo TEXT NOT NULL,
-            cliente TEXT NOT NULL,
-            referencia TEXT,
-            valor REAL DEFAULT 0,
-            criado_em TEXT NOT NULL,
-            arquivo_nome TEXT,
-            tem_arquivo INTEGER NOT NULL DEFAULT 0,
-            dados_json TEXT
-        )
-    """)
-
-    # ===== MIGRAÇÃO: novas colunas do financeiro (Agenda de Cobrança completa) =====
-    colunas_existentes = {row["name"] for row in cur.execute("PRAGMA table_info(financeiro)").fetchall()}
-    novas_colunas = {
-        "vencimento": "TEXT DEFAULT ''",
-        "data_promessa_pagamento": "TEXT DEFAULT ''",
-        "nota_enviada": "INTEGER DEFAULT 0",
-        "data_envio_nota": "TEXT DEFAULT ''",
-        "observacao": "TEXT DEFAULT ''",
-        "nota": "TEXT DEFAULT ''",
-        "mes_referencia": "INTEGER",
-        "ano_referencia": "INTEGER",
-    }
-    for nome_coluna, definicao in novas_colunas.items():
-        if nome_coluna not in colunas_existentes:
-            cur.execute(f"ALTER TABLE financeiro ADD COLUMN {nome_coluna} {definicao}")
-
-    conn.commit()
-
-    # Preenche mes_referencia/ano_referencia de lançamentos antigos (uma vez só)
-    pendentes_backfill = cur.execute(
-        "SELECT id, referencia, data_emissao FROM financeiro WHERE mes_referencia IS NULL"
-    ).fetchall()
-    for row in pendentes_backfill:
-        mes, ano = parse_mes_ano_referencia(row["referencia"], row["data_emissao"])
-        cur.execute(
-            "UPDATE financeiro SET mes_referencia = ?, ano_referencia = ? WHERE id = ?",
-            (mes, ano, row["id"]),
-        )
     conn.commit()
     conn.close()
 
@@ -234,22 +160,6 @@ class FinanceiroPayload(BaseModel):
     status: str = "pendente"
     dataEmissao: str = ""
     dataRecebimento: str = ""
-    vencimento: str = ""
-    dataPromessaPagamento: str = ""
-    notaEnviada: bool = False
-    dataEnvioNota: str = ""
-    observacao: str = ""
-    nota: str = ""
-    mesReferencia: Optional[int] = None
-    anoReferencia: Optional[int] = None
-
-class HistoricoPdfPayload(BaseModel):
-    id: Optional[str] = None
-    tipo: str
-    cliente: str
-    referencia: str = ""
-    valor: float = 0
-    dados: Optional[dict] = None
 
 class EquipePayload(BaseModel):
     id: Optional[str] = None
@@ -267,7 +177,6 @@ def gerar_id():
     return str(uuid.uuid4())
 
 def row_financeiro(row):
-    chaves = row.keys()
     return {
         "id": row["id"],
         "cliente": row["cliente"],
@@ -277,26 +186,6 @@ def row_financeiro(row):
         "status": row["status"] or "pendente",
         "dataEmissao": row["data_emissao"] or "",
         "dataRecebimento": row["data_recebimento"] or "",
-        "vencimento": (row["vencimento"] if "vencimento" in chaves else "") or "",
-        "dataPromessaPagamento": (row["data_promessa_pagamento"] if "data_promessa_pagamento" in chaves else "") or "",
-        "notaEnviada": bool(row["nota_enviada"]) if "nota_enviada" in chaves and row["nota_enviada"] is not None else False,
-        "dataEnvioNota": (row["data_envio_nota"] if "data_envio_nota" in chaves else "") or "",
-        "observacao": (row["observacao"] if "observacao" in chaves else "") or "",
-        "nota": (row["nota"] if "nota" in chaves else "") or "",
-        "mesReferencia": row["mes_referencia"] if "mes_referencia" in chaves else None,
-        "anoReferencia": row["ano_referencia"] if "ano_referencia" in chaves else None,
-    }
-
-def row_historico_resumo(row):
-    return {
-        "id": row["id"],
-        "tipo": row["tipo"],
-        "cliente": row["cliente"],
-        "referencia": row["referencia"] or "",
-        "valor": row["valor"] or 0,
-        "criadoEm": row["criado_em"],
-        "temArquivo": bool(row["tem_arquivo"]),
-        "temDados": bool(row["dados_json"]),
     }
 
 def row_equipe(row):
@@ -366,26 +255,11 @@ def listar_financeiro():
 @app.post("/financeiro")
 def salvar_financeiro(payload: FinanceiroPayload):
     item_id = payload.id or gerar_id()
-    data_emissao = payload.dataEmissao or datetime.now().strftime("%Y-%m-%d")
-
-    mes_ref, ano_ref = payload.mesReferencia, payload.anoReferencia
-    if not mes_ref or not ano_ref:
-        mes_ref, ano_ref = parse_mes_ano_referencia(payload.referencia, data_emissao)
-
     conn = conectar_db()
     conn.execute(
-        """INSERT OR REPLACE INTO financeiro
-           (id, cliente, referencia, descricao, valor, status, data_emissao, data_recebimento,
-            vencimento, data_promessa_pagamento, nota_enviada, data_envio_nota, observacao, nota,
-            mes_referencia, ano_referencia)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            item_id, payload.cliente, payload.referencia, payload.descricao, payload.valor,
-            payload.status, data_emissao, payload.dataRecebimento,
-            payload.vencimento, payload.dataPromessaPagamento, 1 if payload.notaEnviada else 0,
-            payload.dataEnvioNota, payload.observacao, payload.nota,
-            mes_ref, ano_ref,
-        ),
+        """INSERT OR REPLACE INTO financeiro (id, cliente, referencia, descricao, valor, status, data_emissao, data_recebimento)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (item_id, payload.cliente, payload.referencia, payload.descricao, payload.valor, payload.status, payload.dataEmissao, payload.dataRecebimento),
     )
     conn.commit()
     row = conn.execute("SELECT * FROM financeiro WHERE id = ?", (item_id,)).fetchone()
@@ -399,57 +273,6 @@ def excluir_financeiro(item_id: str):
     conn.commit()
     conn.close()
     return {"status": "ok", "id": item_id}
-
-@app.get("/historico-pdfs")
-def listar_historico_pdfs():
-    conn = conectar_db()
-    rows = conn.execute("SELECT * FROM historico_pdfs ORDER BY criado_em DESC").fetchall()
-    conn.close()
-    return {"status": "ok", "historico": [row_historico_resumo(r) for r in rows]}
-
-@app.get("/historico-pdfs/{item_id}")
-def obter_historico_pdf(item_id: str):
-    conn = conectar_db()
-    row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
-    conn.close()
-    if not row:
-        return {"status": "erro", "erro": "Registro não encontrado"}
-    item = row_historico_resumo(row)
-    item["dados"] = json.loads(row["dados_json"]) if row["dados_json"] else None
-    return {"status": "ok", "item": item}
-
-@app.post("/historico-pdfs")
-def salvar_historico_pdf(payload: HistoricoPdfPayload):
-    item_id = payload.id or gerar_id()
-    criado_em = datetime.now().isoformat()
-    dados_json = json.dumps(payload.dados, ensure_ascii=False) if payload.dados else None
-    conn = conectar_db()
-    conn.execute(
-        """INSERT OR REPLACE INTO historico_pdfs
-           (id, tipo, cliente, referencia, valor, criado_em, arquivo_nome, tem_arquivo, dados_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (item_id, payload.tipo, payload.cliente, payload.referencia, payload.valor, criado_em, None, 0, dados_json),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
-    conn.close()
-    return {"status": "ok", "item": row_historico_resumo(row)}
-
-@app.delete("/historico-pdfs/{item_id}")
-def excluir_historico_pdf(item_id: str):
-    conn = conectar_db()
-    conn.execute("DELETE FROM historico_pdfs WHERE id = ?", (item_id,))
-    conn.commit()
-    conn.close()
-    return {"status": "ok", "id": item_id}
-
-@app.delete("/historico-pdfs")
-def limpar_historico_pdfs():
-    conn = conectar_db()
-    conn.execute("DELETE FROM historico_pdfs")
-    conn.commit()
-    conn.close()
-    return {"status": "ok"}
 
 @app.get("/equipe")
 def listar_equipe():

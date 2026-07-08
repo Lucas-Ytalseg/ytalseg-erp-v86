@@ -322,7 +322,6 @@ export default function Relatorios() {
 
 
   const RASCUNHO_KEY = "ytalseg_relatorio_rascunho_v11";
-  const CHAVE_REABRIR = "ytalseg_reabrir_relatorio_pendente";
 
   useEffect(() => {
     try {
@@ -362,18 +361,6 @@ export default function Relatorios() {
       setRascunhoStatus("Não foi possível salvar o rascunho automático.");
     }
   }, [empresaId, resultado, diasEditaveis, servicos]);
-
-  useEffect(() => {
-    try {
-      const pendente = localStorage.getItem(CHAVE_REABRIR);
-      if (!pendente) return;
-      localStorage.removeItem(CHAVE_REABRIR);
-      const data = JSON.parse(pendente);
-      aplicarBackupRelatorio(data);
-    } catch {
-      // Se der erro ao reabrir, apenas ignora e mantém o relatório atual.
-    }
-  }, []);
 
   function limparRascunhoAutomatico() {
     const ok = window.confirm("Tem certeza que deseja apagar o rascunho automático?");
@@ -445,25 +432,6 @@ export default function Relatorios() {
       diasEditaveis,
       servicos,
     };
-  }
-
-  async function registrarNoHistorico(tipo: "cliente" | "interno") {
-    try {
-      const dados = montarBackupRelatorioAtual();
-      await fetch(`${API_BASE}/historico-pdfs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tipo: tipo === "cliente" ? "Cliente" : "Interno",
-          cliente: empresaAtual?.nome || "Cliente não informado",
-          referencia: referenciaAtual,
-          valor: valorNota,
-          dados,
-        }),
-      });
-    } catch {
-      // Não bloqueia a geração do PDF se o registro no histórico falhar.
-    }
   }
 
   function salvarBackupRelatorioAtual() {
@@ -776,7 +744,6 @@ export default function Relatorios() {
       // Não bloqueia a geração do PDF se o envio ao financeiro falhar.
     }
 
-    registrarNoHistorico("cliente");
     salvarVersaoRelatorioLocal("cliente");
     document.body.classList.add("modo-cliente");
     document.body.classList.remove("modo-interno");
@@ -845,7 +812,6 @@ export default function Relatorios() {
 async function imprimirInterno() {
   if (!validarRelatorioAntesDeGerar("interno")) return;
 
-  registrarNoHistorico("interno");
   salvarVersaoRelatorioLocal("interno");
   document.body.classList.add("modo-interno");
   document.body.classList.remove("modo-cliente");

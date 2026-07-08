@@ -792,7 +792,7 @@ export default function App() {
           {menu === "notafiscal" && <NotaFiscal />}
           {menu === "operacional" && <Operacional />}
           {menu === "configuracoes" && <Configuracoes />}
-          {menu === "historico-pdfs" && <HistoricoPDFs onAbrirRelatorio={() => setMenu("relatorios")} />}
+          {menu === "historico-pdfs" && <HistoricoPDFs />}
         </section>
       </main>
     </div>
