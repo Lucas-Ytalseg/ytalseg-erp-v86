@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
 import logo from "../assets/logo.png";
-import cartaoYtalseg from "../assets/cartao-ytalseg.png";
 import { enviarRelatorioParaFinanceiro } from "./Automacao";
 
 declare global {
@@ -1304,16 +1303,6 @@ background:none;
   background:rgba(255,255,255,.88);
   box-shadow:0 8px 24px rgba(0,0,0,.12);
   border:1px solid #d7d7d7;
-}
-
-        .cartao-final-img{
-  grid-column:1 / -1;
-  grid-row:1 / -1;
-  width:100%;
-  height:100%;
-  display:block;
-  object-fit:contain;
-  border-radius:inherit;
 }
 
         .logo-area-final{
@@ -5602,7 +5591,34 @@ body.modo-interno .ytalseg-card-final .email-line{
 
           <div className="footer-final">
             <div className="ytalseg-card-final">
-              <img src={cartaoYtalseg} className="cartao-final-img" alt="Cartão YTALSEG" />
+              <div className="logo-area-final">
+                <div className="logo-circle-final">
+<img src={logo} className="logo-card" />
+</div>
+</div>
+
+<div className="info-area-final">
+                <h2>YTALSEG</h2>
+                <p>Assessoria e Consultoria em Segurança do Trabalho</p>
+                <p>CNPJ:18.315.702/0001-20</p>
+
+                <strong>REPRESENTANTES RESPONSÁVEIS:</strong>
+
+                <div className="rep-line">
+                  <span>📞 Yatta </span>
+                  <span>(11) 9 5789-8196 </span>
+                </div>
+                <div className="rep-line">
+                  <span>📞 Valdemir  </span>
+                  <span>(11) 9 94711-9488 </span>
+                </div>
+                <div className="rep-line">
+                  <span>📞 Darlan </span>
+                  <span>(11) 9 8407-7772 </span>
+                </div>
+
+                <div className="email-line">✉ Email: financeiro.ytalseg@gmail.com</div>
+              </div>
             </div>
 
             <div className="nota-final">
