@@ -1304,12 +1304,11 @@ background:none;
   background:rgba(255,255,255,.88);
   box-shadow:0 8px 24px rgba(0,0,0,.12);
   border:1px solid #d7d7d7;
-  position:relative;
 }
 
         .cartao-final-img{
-  position:absolute;
-  inset:0;
+  grid-column:1 / -1;
+  grid-row:1 / -1;
   width:100%;
   height:100%;
   display:block;
