@@ -43,8 +43,7 @@ function brl(v: number) {
 }
 
 function hoje() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return new Date().toISOString().slice(0, 10);
 }
 
 function curta(iso?: string) {
@@ -85,15 +84,6 @@ export default function Financeiro() {
 
   const [exportando, setExportando] = useState<{ titulo: string; texto: string } | null>(null);
   const [clienteExportar, setClienteExportar] = useState("");
-
-  const [exportMes, setExportMes] = useState(agora.getMonth() + 1);
-  const [exportAno, setExportAno] = useState(agora.getFullYear());
-  const [csvPeriodo, setCsvPeriodo] = useState<"mes" | "ano">("mes");
-
-  useEffect(() => {
-    setExportMes(mesSelecionado);
-    setExportAno(anoSelecionado);
-  }, [mesSelecionado, anoSelecionado]);
 
   async function carregar() {
     setCarregando(true);
@@ -227,113 +217,10 @@ export default function Financeiro() {
     return `• ${prefixo} — ${brl(l.valor)} — Venc. ${curta(l.vencimento)} — Status: ${statusTexto}`;
   }
 
-  function linhaRecebido(l: Lancamento) {
-    const nf = l.nota ? ` (NF ${l.nota})` : "";
-    return `• ${l.cliente} — ${brl(l.valor)} — Recebido em ${curta(l.dataRecebimento)}${nf}`;
-  }
-
-  function linhaNoPrazo(l: Lancamento) {
-    const nf = l.nota ? ` (NF ${l.nota})` : "";
-    return `• ${l.cliente} — ${brl(l.valor)} — Venc. ${curta(l.vencimento)} — Nota enviada em ${curta(l.dataEnvioNota)}${nf}`;
-  }
-
-  function linhaPendenteEnvio(l: Lancamento) {
-    return `• ${l.cliente} — ${brl(l.valor)} — Venc. ${curta(l.vencimento)}`;
-  }
-
-  function linhaVencido(l: Lancamento) {
-    const info = statusInfo(l.status);
-    const promessa = l.dataPromessaPagamento ? ` (${curta(l.dataPromessaPagamento)})` : "";
-    return `• ${l.cliente} — ${brl(l.valor)} — Venceu em ${curta(l.vencimento)} — Status: ${info.label}${promessa}`;
-  }
-
   function exportarMes() {
-    const itens = lista.filter(
-      (l) => Number(l.mesReferencia) === exportMes && Number(l.anoReferencia) === exportAno
-    );
-    const h = hoje();
-
-    const recebidos: Lancamento[] = [];
-    const noPrazo: Lancamento[] = [];
-    const pendentesEnvio: Lancamento[] = [];
-    const vencidos: Lancamento[] = [];
-
-    itens.forEach((l) => {
-      if (l.status === "recebido") recebidos.push(l);
-      else if (l.vencimento && l.vencimento < h) vencidos.push(l);
-      else if (l.notaEnviada) noPrazo.push(l);
-      else pendentesEnvio.push(l);
-    });
-
-    const secoes: string[] = [];
-    if (recebidos.length) secoes.push(`✅ *RECEBIDOS*\n${recebidos.map(linhaRecebido).join("\n")}`);
-    if (noPrazo.length) secoes.push(`⏳ *NO PRAZO (A RECEBER)*\n${noPrazo.map(linhaNoPrazo).join("\n")}`);
-    if (pendentesEnvio.length) secoes.push(`📤 *PENDENTES DE ENVIO DE NOTA*\n${pendentesEnvio.map(linhaPendenteEnvio).join("\n")}`);
-    if (vencidos.length) secoes.push(`🔴 *VENCIDOS*\n${vencidos.map(linhaVencido).join("\n")}`);
-
-    const gerado = itens.reduce((a, x) => a + Number(x.valor || 0), 0);
-    const recebido = recebidos.reduce((a, x) => a + Number(x.valor || 0), 0);
-    const aberto = gerado - recebido;
-
-    const corpo = secoes.length ? secoes.join("\n\n") : "Nenhum lançamento neste mês.";
-    const texto = `*YTALSEG — Cobranças ${NOMES_MESES[exportMes]}/${exportAno}*\n\n${corpo}\n\n*TOTAIS DO MÊS*\nGerado: ${brl(gerado)} | Recebido: ${brl(recebido)} | Em aberto: ${brl(aberto)}`;
-    setExportando({ titulo: `Resumo de ${NOMES_MESES[exportMes]}/${exportAno}`, texto });
-  }
-
-  function paraNumeroBR(v: number) {
-    return Number(v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-
-  function dataCompleta(iso?: string) {
-    if (!iso) return "";
-    const d = new Date(`${iso}T00:00:00`);
-    if (Number.isNaN(d.getTime())) return iso;
-    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
-  }
-
-  function csvCampo(v: any) {
-    const s = String(v ?? "");
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-
-  function exportarCSV() {
-    const itens = csvPeriodo === "mes"
-      ? lista.filter((l) => Number(l.mesReferencia) === exportMes && Number(l.anoReferencia) === exportAno)
-      : lista.filter((l) => Number(l.anoReferencia) === exportAno);
-
-    if (itens.length === 0) {
-      alert("Nenhum lançamento encontrado para esse período.");
-      return;
-    }
-
-    const cabecalho = ["Cliente", "Mês de referência", "Valor", "Nº NF", "Data envio nota", "Vencimento", "Data prometida", "Data recebimento", "Status", "Observações"];
-    const linhas = itens.map((l) => [
-      l.cliente,
-      l.mesReferencia ? `${NOMES_MESES[l.mesReferencia]}/${l.anoReferencia}` : "",
-      paraNumeroBR(l.valor),
-      l.nota || "",
-      dataCompleta(l.dataEnvioNota),
-      dataCompleta(l.vencimento),
-      dataCompleta(l.dataPromessaPagamento),
-      dataCompleta(l.dataRecebimento),
-      statusInfo(l.status).label,
-      l.observacao || "",
-    ].map(csvCampo).join(";"));
-
-    const conteudo = "﻿" + [cabecalho.map(csvCampo).join(";"), ...linhas].join("\r\n");
-    const blob = new Blob([conteudo], { type: "text/csv;charset=utf-8;" });
-    const nomeArquivo = csvPeriodo === "mes"
-      ? `financeiro_${NOMES_MESES[exportMes].toLowerCase()}_${exportAno}.csv`
-      : `financeiro_${exportAno}.csv`;
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = nomeArquivo;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const linhas = itensDoMes.map((l) => linhaResumo(l, false));
+    const texto = `*YTALSEG — Cobranças ${NOMES_MESES[mesSelecionado]}/${anoSelecionado}*\n\n${linhas.join("\n") || "Nenhum lançamento neste mês."}\n\nTotal do mês: ${brl(totaisMes.total)} | Recebido: ${brl(totaisMes.recebido)} | Em aberto: ${brl(totaisMes.pendente)}`;
+    setExportando({ titulo: "Resumo do mês", texto });
   }
 
   function exportarCliente() {
@@ -360,7 +247,7 @@ export default function Financeiro() {
     if (!rascunho) return null;
     return (
       <tr className="linha-edicao">
-        <td colSpan={9}>
+        <td colSpan={6}>
           <div className="form-edicao">
             <div className="campo">
               <label>Cliente</label>
@@ -423,9 +310,6 @@ export default function Financeiro() {
             <th>Referência</th>
             <th>Valor</th>
             <th>Vencimento</th>
-            <th>Nº NF</th>
-            <th>Nota enviada</th>
-            <th>Recebimento</th>
             <th>Status</th>
             <th>Ações</th>
           </tr>
@@ -446,9 +330,6 @@ export default function Financeiro() {
                   <td data-label="Vencimento" className={atrasado ? "texto-vencido" : ""}>
                     {curta(l.vencimento)}{atrasado ? " (vencido)" : ""}
                   </td>
-                  <td data-label="Nº NF">{l.nota || "—"}</td>
-                  <td data-label="Nota enviada">{l.notaEnviada ? curta(l.dataEnvioNota) : "—"}</td>
-                  <td data-label="Recebimento">{l.status === "recebido" ? curta(l.dataRecebimento) : "—"}</td>
                   <td data-label="Status">
                     <span className="pill" style={{ color: info.cor, background: info.fundo }}>{info.label}</span>
                   </td>
@@ -467,7 +348,7 @@ export default function Financeiro() {
             );
           })}
           {itens.length === 0 && (
-            <tr><td colSpan={9} className="vazio">Nenhum lançamento encontrado.</td></tr>
+            <tr><td colSpan={6} className="vazio">Nenhum lançamento encontrado.</td></tr>
           )}
         </tbody>
       </table>
@@ -500,7 +381,6 @@ export default function Financeiro() {
         .texto-vencido{color:#b91c1c;font-weight:1000}
         .obs-resumo{font-size:11px;color:#6b7280;margin-top:2px}
         .vazio{color:#6b7280;font-weight:800}
-        .rotulo-exportar{font-size:12px;font-weight:900;color:#374151;display:flex;align-items:center}
         .form-edicao{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
         .campo{display:flex;flex-direction:column;gap:4px}
         .campo label{font-size:11px;font-weight:1000;color:#374151}
@@ -592,37 +472,16 @@ export default function Financeiro() {
       <div className="box">
         <div className="head" style={{ marginBottom: 10 }}>
           <h2 style={{ margin: 0 }}>Lançamentos de {NOMES_MESES[mesSelecionado]}/{anoSelecionado}</h2>
+          <div className="filtros">
+            <button className="btn" onClick={exportarMes}>Exportar resumo do mês</button>
+            <select className="hist-select" value={clienteExportar} onChange={(e) => setClienteExportar(e.target.value)}>
+              <option value="">Selecione um cliente...</option>
+              {clientesConhecidos.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <button className="btn" onClick={exportarCliente}>Exportar resumo do cliente</button>
+          </div>
         </div>
         {tabela(itensDoMesFiltrados)}
-      </div>
-
-      <div className="box">
-        <h2 style={{ marginTop: 0 }}>Exportar</h2>
-
-        <div className="filtros" style={{ marginBottom: 10 }}>
-          <span className="rotulo-exportar">Mês/ano do resumo:</span>
-          <select className="hist-select" value={exportMes} onChange={(e) => setExportMes(Number(e.target.value))}>
-            {NOMES_MESES.slice(1).map((nome, i) => <option key={nome} value={i + 1}>{nome}</option>)}
-          </select>
-          <input className="hist-input" type="number" style={{ width: 90 }} value={exportAno} onChange={(e) => setExportAno(Number(e.target.value || anoSelecionado))} />
-          <button className="btn" onClick={exportarMes}>Exportar resumo (WhatsApp)</button>
-        </div>
-
-        <div className="filtros" style={{ marginBottom: 10 }}>
-          <select className="hist-select" value={csvPeriodo} onChange={(e) => setCsvPeriodo(e.target.value as "mes" | "ano")}>
-            <option value="mes">CSV do mês selecionado acima ({NOMES_MESES[exportMes]}/{exportAno})</option>
-            <option value="ano">CSV do ano inteiro ({exportAno})</option>
-          </select>
-          <button className="btn" onClick={exportarCSV}>Exportar Excel (CSV)</button>
-        </div>
-
-        <div className="filtros" style={{ borderTop: "1px solid #edf0f2", paddingTop: 10 }}>
-          <select className="hist-select" value={clienteExportar} onChange={(e) => setClienteExportar(e.target.value)}>
-            <option value="">Selecione um cliente...</option>
-            {clientesConhecidos.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <button className="btn" onClick={exportarCliente}>Exportar resumo do cliente</button>
-        </div>
       </div>
 
       {itensAnteriores.length > 0 && (
