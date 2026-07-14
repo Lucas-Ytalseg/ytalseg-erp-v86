@@ -58,12 +58,6 @@ function estaVencido(l: Lancamento) {
   return !!l.vencimento && l.vencimento < hoje() && l.status !== "recebido";
 }
 
-// A data de envio é a fonte da verdade: se foi preenchida, a nota foi enviada,
-// mesmo que a caixinha "Nota fiscal enviada?" não tenha sido marcada.
-function notaFoiEnviada(l: Lancamento) {
-  return !!l.notaEnviada || !!l.dataEnvioNota;
-}
-
 const vazio: Lancamento = {
   id: "", cliente: "", referencia: "", descricao: "", valor: 0,
   status: "pendente", dataEmissao: "", dataRecebimento: "",
@@ -322,7 +316,7 @@ export default function Financeiro() {
     itens.forEach((l) => {
       if (l.status === "recebido") recebidos.push(l);
       else if (l.vencimento && l.vencimento < h) vencidos.push(l);
-      else if (notaFoiEnviada(l)) noPrazo.push(l);
+      else if (l.notaEnviada) noPrazo.push(l);
       else pendentesEnvio.push(l);
     });
 
@@ -456,7 +450,7 @@ export default function Financeiro() {
             </div>
             <div className="campo">
               <label>Data de envio da nota</label>
-              <input type="date" value={rascunho.dataEnvioNota} onChange={(e) => setRascunho({ ...rascunho, dataEnvioNota: e.target.value, notaEnviada: !!e.target.value })} />
+              <input type="date" value={rascunho.dataEnvioNota} onChange={(e) => setRascunho({ ...rascunho, dataEnvioNota: e.target.value })} />
             </div>
             <div className="campo">
               <label>Número da nota fiscal</label>
@@ -513,8 +507,8 @@ export default function Financeiro() {
                     {curta(l.vencimento)}{atrasado ? " (vencido)" : ""}
                   </td>
                   <td data-label="Nº NF">{l.nota || "—"}</td>
-                  <td data-label="Nota enviada">{l.dataEnvioNota ? curta(l.dataEnvioNota) : (l.notaEnviada ? "Sim" : "—")}</td>
-                  <td data-label="Recebimento">{l.dataRecebimento ? curta(l.dataRecebimento) : "—"}</td>
+                  <td data-label="Nota enviada">{l.notaEnviada ? curta(l.dataEnvioNota) : "—"}</td>
+                  <td data-label="Recebimento">{l.status === "recebido" ? curta(l.dataRecebimento) : "—"}</td>
                   <td data-label="Status">
                     <span className="pill" style={{ color: info.cor, background: info.fundo }}>{info.label}</span>
                   </td>
