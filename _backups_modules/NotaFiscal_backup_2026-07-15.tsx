@@ -1,23 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import NotasFiscaisEmitidas from "./NotasFiscaisEmitidas";
 
 const API_BASE = "/api";
 
 const VERDE = "#00B050";
-
-const STATUS_LISTA = [
-  { valor: "pendente", label: "Pendente" },
-  { valor: "nota_enviada", label: "Nota enviada" },
-  { valor: "cobrado", label: "Cobrado" },
-  { valor: "prometeu_pagar", label: "Prometeu pagar" },
-  { valor: "negociacao", label: "Em negociação" },
-  { valor: "aprovado", label: "Aprovado" },
-  { valor: "recebido", label: "Recebido" },
-];
-
-function statusLabel(valor: string) {
-  return STATUS_LISTA.find((s) => s.valor === valor)?.label || valor || "Pendente";
-}
 
 type Cliente = {
   id: string;
@@ -35,17 +20,10 @@ type Lancamento = {
   referencia: string;
   descricao: string;
   valor: number;
-  status: string;
+  status: "pendente" | "recebido";
   dataEmissao: string;
-  dataRecebimento?: string;
   vencimento?: string;
-  dataPromessaPagamento?: string;
-  notaEnviada?: boolean;
-  dataEnvioNota?: string;
-  observacao?: string;
   nota?: string;
-  mesReferencia?: number | null;
-  anoReferencia?: number | null;
 };
 
 type NotaForm = {
@@ -109,7 +87,6 @@ export default function NotaFiscal() {
   const [selecionado, setSelecionado] = useState("");
   const [erro, setErro] = useState("");
   const [copiado, setCopiado] = useState("");
-  const [detalheAberto, setDetalheAberto] = useState<Lancamento | null>(null);
 
   async function carregar() {
     try {
@@ -239,8 +216,9 @@ ${form.descricao}
     await carregar();
   }
 
-  function abrirDetalhe(lanc: Lancamento) {
-    setDetalheAberto(lanc);
+  function visualizarLancamento(lanc: Lancamento) {
+    setSelecionado(lanc.id);
+    aplicarLancamento(lanc.id);
   }
 
   function abrirPortal() {
@@ -273,16 +251,7 @@ ${form.descricao}
         .copy-ok { color:#006b34; font-weight:1000; }
         .preview { border:1px dashed #b7c2bd; background:#f8fafc; border-radius:14px; padding:14px; white-space:pre-wrap; font-family:Consolas, monospace; font-size:12px; }
         .valor { font-size:34px; font-weight:1000; color:${VERDE}; }
-        .modal-overlay { position:fixed; inset:0; background:rgba(17,24,39,.55); display:flex; align-items:center; justify-content:center; padding:20px; z-index:1000; }
-        .modal-box { background:#fff; border-radius:22px; padding:22px; max-width:560px; width:100%; max-height:85vh; overflow-y:auto; box-shadow:0 20px 60px rgba(0,0,0,.3); }
-        .modal-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:14px; }
-        .modal-head h2 { margin:0; font-size:22px; font-weight:1000; color:#111827; }
-        .modal-close { border:0; background:#f3f4f6; color:#111; width:32px; height:32px; border-radius:10px; font-weight:1000; cursor:pointer; font-size:16px; flex-shrink:0; }
-        .modal-linha { display:grid; grid-template-columns:160px 1fr; gap:10px; padding:9px 0; border-bottom:1px solid #f1f5f9; font-size:13px; }
-        .modal-linha strong { color:#374151; font-weight:1000; }
-        .modal-linha span { color:#111827; font-weight:700; white-space:pre-wrap; }
         @media(max-width:1000px){ .grid,.rows{grid-template-columns:1fr;} }
-        @media(max-width:600px){ .modal-linha{grid-template-columns:1fr;} }
       `}</style>
 
       <div className="head">
@@ -444,7 +413,7 @@ ${form.descricao}
                 <td>{l.status}</td>
                 <td>
                   <div className="actions">
-                    <button className="btn-gray" onClick={() => abrirDetalhe(l)}>Visualizar</button>
+                    <button className="btn-gray" onClick={() => visualizarLancamento(l)}>Visualizar</button>
                     <button className="btn-gray" onClick={() => copiarTexto(`Cliente: ${l.cliente}\nReferência: ${l.referencia}\nValor: ${brl(l.valor)}\nNota: ${l.nota || "Pendente"}`, "Dados da nota")}>Copiar</button>
                     <button className="btn-gray" onClick={() => excluirLancamento(l.id)}>Excluir</button>
                   </div>
@@ -454,8 +423,6 @@ ${form.descricao}
           </tbody>
         </table>
       </div>
-
-      <NotasFiscaisEmitidas />
 
       <div className="box">
         <h2>Prévia do pacote para o portal</h2>
@@ -474,30 +441,6 @@ DISCRIMINAÇÃO:
 ${form.descricao || "-"}`}
         </div>
       </div>
-
-      {detalheAberto && (
-        <div className="modal-overlay" onClick={() => setDetalheAberto(null)}>
-          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <h2>{detalheAberto.cliente}</h2>
-              <button className="modal-close" onClick={() => setDetalheAberto(null)}>×</button>
-            </div>
-            <div className="modal-linha"><strong>Referência</strong><span>{detalheAberto.referencia || "-"}</span></div>
-            <div className="modal-linha"><strong>Valor</strong><span>{brl(detalheAberto.valor)}</span></div>
-            <div className="modal-linha"><strong>Status</strong><span>{statusLabel(detalheAberto.status)}</span></div>
-            <div className="modal-linha"><strong>Vencimento</strong><span>{detalheAberto.vencimento || "-"}</span></div>
-            <div className="modal-linha"><strong>Emissão</strong><span>{detalheAberto.dataEmissao || "-"}</span></div>
-            <div className="modal-linha"><strong>Recebimento</strong><span>{detalheAberto.dataRecebimento || "-"}</span></div>
-            <div className="modal-linha"><strong>Nota fiscal</strong><span>{detalheAberto.nota || "Pendente"}</span></div>
-            <div className="modal-linha">
-              <strong>Nota enviada?</strong>
-              <span>{detalheAberto.notaEnviada || detalheAberto.dataEnvioNota ? `Sim, em ${detalheAberto.dataEnvioNota || "-"}` : "Não"}</span>
-            </div>
-            <div className="modal-linha"><strong>Observação</strong><span>{detalheAberto.observacao || "-"}</span></div>
-            <div className="modal-linha"><strong>Discriminação / Descrição</strong><span>{detalheAberto.descricao || "-"}</span></div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
