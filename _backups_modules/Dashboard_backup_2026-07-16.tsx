@@ -7,20 +7,20 @@ const AZUL = "#2563eb";
 const VERMELHO = "#dc2626";
 const AMARELO = "#b45309";
 
-// Nota fiscal emitida. A partir da v87 o Dashboard usa a própria nota como fonte da
-// verdade do faturamento (status calculado de cancelada/dataRecebimento/vencimento,
-// sem cruzar com o financeiro) — o app é novo e muita nota de 2026 ainda não tem
-// lançamento correspondente, então depender do financeiro deixava o Dashboard cego
-// pra essas notas.
+// Nota fiscal emitida, enriquecida pelo backend (/dashboard/financeiro-notas) com o
+// status do lançamento do financeiro correspondente — essa é a fonte da verdade do
+// faturamento no Dashboard (não mais o financeiro direto). "recebido" só quando o
+// lançamento vinculado (direto ou casado por cliente+valor+mês/ano) está "recebido".
 type NotaDashboard = {
   id: string;
-  numeroNota: string;
   cliente: string;
   valor: number;
   mesReferencia: number | null;
   anoReferencia: number | null;
   vencimento: string;
+  statusFinanceiro: "recebido" | "aberto" | "vencido";
   dataRecebimento: string;
+  financeiroIdResolvido: string | null;
 };
 
 type SemNotaItem = {
@@ -30,28 +30,20 @@ type SemNotaItem = {
   referencia: string;
 };
 
-type StatusNota = "recebida" | "aberta" | "vencida";
+type Colaborador = {
+  id: string;
+  nome: string;
+  ativo: boolean;
+  validade: string;
+};
 
 const NOMES_MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
-const STATUS_NOTA_LABEL: Record<StatusNota, string> = {
-  recebida: "Recebido",
-  aberta: "Em aberto",
-  vencida: "Vencido",
+const STATUS_FINANCEIRO_LABEL: Record<string, string> = {
+  recebido: "Recebido",
+  aberto: "Em aberto",
+  vencido: "Vencido",
 };
-
-// "Vencida" nunca é gravada - é sempre calculada (vencimento passou e a nota não
-// está recebida), então nunca fica desatualizada.
-function statusNota(n: { dataRecebimento: string; vencimento: string }, hoje: string): StatusNota {
-  if (n.dataRecebimento) return "recebida";
-  if (n.vencimento && n.vencimento < hoje) return "vencida";
-  return "aberta";
-}
-
-function referenciaLabel(n: { mesReferencia: number | null; anoReferencia: number | null }) {
-  if (!n.mesReferencia || !n.anoReferencia) return "-";
-  return `${NOMES_MESES[n.mesReferencia]}/${n.anoReferencia}`;
-}
 
 function brl(v: number) {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(v || 0));
@@ -99,6 +91,7 @@ export default function Dashboard() {
   const agora = new Date();
   const [notas, setNotas] = useState<NotaDashboard[]>([]);
   const [semNotaEmitida, setSemNotaEmitida] = useState<SemNotaItem[]>([]);
+  const [equipe, setEquipe] = useState<Colaborador[]>([]);
   const [erro, setErro] = useState("");
   const [carregando, setCarregando] = useState(false);
 
@@ -106,18 +99,26 @@ export default function Dashboard() {
   const [anoSelecionado, setAnoSelecionado] = useState(agora.getFullYear());
   const [anoResumo, setAnoResumo] = useState(agora.getFullYear());
   const [clienteExpandido, setClienteExpandido] = useState("");
-  const [modalAberto, setModalAberto] = useState<"vencidos" | "vencendo" | null>(null);
 
   async function carregarTudo() {
     setCarregando(true);
     try {
       setErro("");
-      const resDash = await fetch(`${API_BASE}/dashboard/financeiro-notas`);
+      const [resDash, resEquipe] = await Promise.all([
+        fetch(`${API_BASE}/dashboard/financeiro-notas`),
+        fetch(`${API_BASE}/equipe`).catch(() => null),
+      ]);
+
       const dataDash = await resDash.json();
 
       if (dataDash.status === "ok") {
         setNotas(dataDash.notas || []);
         setSemNotaEmitida(dataDash.semNotaEmitida || []);
+      }
+
+      if (resEquipe) {
+        const dataEquipe = await resEquipe.json();
+        if (dataEquipe.status === "ok") setEquipe(dataEquipe.equipe || []);
       }
     } catch {
       setErro("Não consegui carregar dados do backend SQLite. Confira se o backend está rodando.");
@@ -134,7 +135,7 @@ export default function Dashboard() {
 
   const vencidos = useMemo(() => {
     return notas
-      .filter((n) => statusNota(n, hoje) === "vencida")
+      .filter((n) => n.statusFinanceiro === "vencido")
       .map((n) => ({ ...n, diasAtraso: diasEntre(hoje, n.vencimento) }))
       .sort((a, b) => b.diasAtraso - a.diasAtraso);
   }, [notas, hoje]);
@@ -144,7 +145,7 @@ export default function Dashboard() {
     limite.setDate(limite.getDate() + 7);
     const limiteISO = limite.toISOString().slice(0, 10);
     return notas
-      .filter((n) => statusNota(n, hoje) === "aberta" && n.vencimento && n.vencimento >= hoje && n.vencimento <= limiteISO)
+      .filter((n) => n.statusFinanceiro === "aberto" && n.vencimento && n.vencimento >= hoje && n.vencimento <= limiteISO)
       .map((n) => ({ ...n, diasRestantes: diasEntre(n.vencimento, hoje) }))
       .sort((a, b) => a.diasRestantes - b.diasRestantes);
   }, [notas, hoje]);
@@ -157,35 +158,25 @@ export default function Dashboard() {
     [semNotaEmitida]
   );
 
-  const todosOsMeses = mesSelecionado === 0;
-
   const numerosDoMes = useMemo(() => {
-    const itensMes = notas.filter((n) => {
-      if (Number(n.anoReferencia) !== anoSelecionado) return false;
-      return todosOsMeses || Number(n.mesReferencia) === mesSelecionado;
-    });
+    const itensMes = notas.filter(
+      (n) => Number(n.mesReferencia) === mesSelecionado && Number(n.anoReferencia) === anoSelecionado
+    );
     const gerado = itensMes.reduce((a, x) => a + Number(x.valor || 0), 0);
     const recebido = itensMes
-      .filter((x) => statusNota(x, hoje) === "recebida")
+      .filter((x) => x.statusFinanceiro === "recebido")
       .reduce((a, x) => a + Number(x.valor || 0), 0);
-    const vencido = itensMes
-      .filter((x) => statusNota(x, hoje) === "vencida")
+    const emAberto = gerado - recebido;
+    const acumuladoAnterior = notas
+      .filter((n) => {
+        if (n.statusFinanceiro === "recebido") return false;
+        const ano = Number(n.anoReferencia) || 0;
+        const mes = Number(n.mesReferencia) || 0;
+        return ano < anoSelecionado || (ano === anoSelecionado && mes < mesSelecionado);
+      })
       .reduce((a, x) => a + Number(x.valor || 0), 0);
-    const emAberto = itensMes
-      .filter((x) => statusNota(x, hoje) === "aberta")
-      .reduce((a, x) => a + Number(x.valor || 0), 0);
-    const acumuladoAnterior = todosOsMeses
-      ? 0
-      : notas
-          .filter((n) => {
-            if (statusNota(n, hoje) === "recebida") return false;
-            const ano = Number(n.anoReferencia) || 0;
-            const mes = Number(n.mesReferencia) || 0;
-            return ano < anoSelecionado || (ano === anoSelecionado && mes < mesSelecionado);
-          })
-          .reduce((a, x) => a + Number(x.valor || 0), 0);
-    return { gerado, recebido, emAberto, vencido, acumuladoAnterior };
-  }, [notas, mesSelecionado, anoSelecionado, todosOsMeses, hoje]);
+    return { gerado, recebido, emAberto, acumuladoAnterior };
+  }, [notas, mesSelecionado, anoSelecionado]);
 
   const evolucao12Meses = useMemo(() => {
     const meses: { mes: number; ano: number; label: string; gerado: number; recebido: number }[] = [];
@@ -196,13 +187,13 @@ export default function Dashboard() {
       const itens = notas.filter((n) => Number(n.mesReferencia) === mes && Number(n.anoReferencia) === ano);
       const gerado = itens.reduce((a, x) => a + Number(x.valor || 0), 0);
       const recebido = itens
-        .filter((x) => statusNota(x, hoje) === "recebida")
+        .filter((x) => x.statusFinanceiro === "recebido")
         .reduce((a, x) => a + Number(x.valor || 0), 0);
       meses.push({ mes, ano, label: `${NOMES_MESES[mes].slice(0, 3)}/${String(ano).slice(2)}`, gerado, recebido });
     }
     return meses;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notas, hoje]);
+  }, [notas]);
 
   const anosDisponiveis = useMemo(() => {
     const anos = new Set<number>(notas.map((n) => Number(n.anoReferencia)).filter(Boolean) as number[]);
@@ -218,7 +209,7 @@ export default function Dashboard() {
       const nome = n.cliente || "Sem cliente";
       if (!porCliente[nome]) porCliente[nome] = { gerado: 0, recebido: 0 };
       porCliente[nome].gerado += Number(n.valor || 0);
-      if (statusNota(n, hoje) === "recebida") porCliente[nome].recebido += Number(n.valor || 0);
+      if (n.statusFinanceiro === "recebido") porCliente[nome].recebido += Number(n.valor || 0);
     });
     return Object.entries(porCliente)
       .map(([cliente, v]) => ({
@@ -229,7 +220,7 @@ export default function Dashboard() {
         pctPago: v.gerado > 0 ? (v.recebido / v.gerado) * 100 : 0,
       }))
       .sort((a, b) => b.gerado - a.gerado);
-  }, [notas, anoResumo, hoje]);
+  }, [notas, anoResumo]);
 
   const lancamentosClienteExpandido = useMemo(() => {
     if (!clienteExpandido) return [];
@@ -237,6 +228,16 @@ export default function Dashboard() {
       .filter((n) => n.cliente === clienteExpandido && Number(n.anoReferencia) === anoResumo)
       .sort((a, b) => (b.mesReferencia || 0) - (a.mesReferencia || 0));
   }, [notas, clienteExpandido, anoResumo]);
+
+  const equipeAtiva = equipe.filter((e) => e.ativo).length;
+  const documentosComValidade = equipe.filter((e) => e.validade);
+  const docsVencendo = documentosComValidade.filter((e) => {
+    const validade = new Date(e.validade);
+    const diff = validade.getTime() - new Date().getTime();
+    const dias = diff / (1000 * 60 * 60 * 24);
+    return dias >= 0 && dias <= 30;
+  }).length;
+  const docsVencidos = documentosComValidade.filter((e) => new Date(e.validade) < new Date()).length;
 
   const maiorValorGrafico = Math.max(1, ...evolucao12Meses.flatMap((m) => [m.gerado, m.recebido]));
 
@@ -277,14 +278,6 @@ export default function Dashboard() {
         .fdash-lista-item .tag { font-size:11px; font-weight:1000; white-space:nowrap; }
         .fdash-ok-msg { color:#166534; font-weight:900; padding:8px 0; }
         .fdash-mais { font-size:12px; color:#6b7280; font-weight:800; padding-top:6px; }
-        .fdash-mais-btn { background:none; border:0; color:${AZUL}; font-weight:900; cursor:pointer; padding:6px 0 0; text-decoration:underline; font-size:12px; }
-
-        .fdash-modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:1000; padding:20px; }
-        .fdash-modal { background:white; border-radius:20px; max-width:720px; width:100%; max-height:82vh; display:flex; flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,.3); }
-        .fdash-modal-head { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:16px 20px; border-bottom:1px solid #e5e7eb; }
-        .fdash-modal-head strong { font-size:16px; font-weight:1000; color:#111827; }
-        .fdash-modal-body { padding:8px 20px 20px; overflow-y:auto; }
-        @media(max-width:480px) { .fdash-modal { max-height:88vh; } }
 
         .fdash-cards { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:14px; }
         .fdash-card { background:white; border:1px solid #e5e7eb; border-radius:22px; padding:18px; box-shadow:0 10px 24px rgba(0,0,0,.06); }
@@ -313,15 +306,19 @@ export default function Dashboard() {
         .fdash-empty { color:#6b7280; font-weight:700; padding:12px 0; }
         .fdash-sub-linha td { background:#f9fafb; padding:14px; }
 
+        .fdash-secundaria { background:white; border:1px solid #e5e7eb; border-radius:24px; padding:20px; box-shadow:0 10px 24px rgba(0,0,0,.05); }
+        .fdash-secundaria h2 { margin:0 0 14px; font-size:19px; font-weight:1000; color:#111827; }
+        .fdash-mini-cards { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+
         @media(max-width: 1100px) { .fdash-cards { grid-template-columns: 1fr 1fr; } }
-        @media(max-width: 900px) { .fdash-atencao { grid-template-columns:1fr; } }
-        @media(max-width: 650px) { .fdash-cards { grid-template-columns:1fr; } }
+        @media(max-width: 900px) { .fdash-atencao { grid-template-columns:1fr; } .fdash-mini-cards{grid-template-columns:1fr 1fr;} }
+        @media(max-width: 650px) { .fdash-cards { grid-template-columns:1fr; } .fdash-mini-cards{grid-template-columns:1fr;} }
       `}</style>
 
       <div className="fdash-head">
         <div>
           <h1>Dashboard Financeiro</h1>
-          <p>Indicadores calculados a partir das notas fiscais emitidas.</p>
+          <p>Indicadores reais puxados do SQLite: Financeiro, Clientes e Equipe.</p>
         </div>
         <div className="fdash-head-actions">
           <button className="fdash-btn" onClick={carregarTudo}>{carregando ? "Atualizando..." : "Atualizar"}</button>
@@ -349,9 +346,7 @@ export default function Dashboard() {
                     <span className="tag" style={{ color: VERMELHO }}>há {l.diasAtraso} {l.diasAtraso === 1 ? "dia" : "dias"}</span>
                   </div>
                 ))}
-                <button className="fdash-mais-btn" onClick={() => setModalAberto("vencidos")}>
-                  Ver todos ({vencidos.length})
-                </button>
+                {vencidos.length > 6 && <div className="fdash-mais">+ {vencidos.length - 6} outros</div>}
               </>
             )}
           </div>
@@ -373,81 +368,28 @@ export default function Dashboard() {
                     </span>
                   </div>
                 ))}
-                <button className="fdash-mais-btn" onClick={() => setModalAberto("vencendo")}>
-                  Ver todos ({vencendoEm7.length})
-                </button>
+                {vencendoEm7.length > 6 && <div className="fdash-mais">+ {vencendoEm7.length - 6} outros</div>}
               </>
             )}
           </div>
         </div>
       </div>
 
-      {modalAberto && (
-        <div className="fdash-modal-backdrop" onClick={() => setModalAberto(null)}>
-          <div className="fdash-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="fdash-modal-head">
-              <strong>
-                {modalAberto === "vencidos"
-                  ? `Vencidos (${vencidos.length})`
-                  : `Vencem nos próximos 7 dias (${vencendoEm7.length})`}
-              </strong>
-              <button className="fdash-btn fdash-btn-secundario" onClick={() => setModalAberto(null)}>Fechar</button>
-            </div>
-            <div className="fdash-modal-body">
-              <div className="fdash-tabela-wrap">
-                <table className="fdash-tabela">
-                  <thead>
-                    <tr>
-                      <th>Cliente</th>
-                      <th>Referência</th>
-                      <th>Vencimento</th>
-                      <th>Valor</th>
-                      <th>{modalAberto === "vencidos" ? "Dias em atraso" : "Dias restantes"}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(modalAberto === "vencidos" ? vencidos : vencendoEm7).map((n: any) => (
-                      <tr key={n.id}>
-                        <td>{n.cliente}</td>
-                        <td>{referenciaLabel(n)}</td>
-                        <td>{curta(n.vencimento)}</td>
-                        <td>{brl(n.valor)}</td>
-                        <td style={{ color: modalAberto === "vencidos" ? VERMELHO : AMARELO, fontWeight: 900 }}>
-                          {modalAberto === "vencidos"
-                            ? `${n.diasAtraso} ${n.diasAtraso === 1 ? "dia" : "dias"}`
-                            : n.diasRestantes === 0
-                            ? "hoje"
-                            : `${n.diasRestantes} ${n.diasRestantes === 1 ? "dia" : "dias"}`}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="fdash-secao">
         <div className="fdash-secao-head">
-          <h2>Números do {todosOsMeses ? "ano" : "mês"}</h2>
+          <h2>Números do mês</h2>
           <div className="fdash-head-actions">
             <select className="fdash-select" value={mesSelecionado} onChange={(e) => setMesSelecionado(Number(e.target.value))}>
-              <option value={0}>Todos os meses (ano inteiro)</option>
               {NOMES_MESES.slice(1).map((nome, i) => <option key={nome} value={i + 1}>{nome}</option>)}
             </select>
             <input className="fdash-input" type="number" style={{ width: 90 }} value={anoSelecionado} onChange={(e) => setAnoSelecionado(Number(e.target.value || agora.getFullYear()))} />
           </div>
         </div>
         <div className="fdash-cards">
-          <Cartao titulo={todosOsMeses ? "Gerado no ano" : "Gerado no mês"} valor={brl(numerosDoMes.gerado)} tipo="normal" />
-          <Cartao titulo={todosOsMeses ? "Recebido no ano" : "Recebido no mês"} valor={brl(numerosDoMes.recebido)} tipo="ok" />
-          <Cartao titulo={todosOsMeses ? "Em aberto no ano" : "Em aberto no mês"} valor={brl(numerosDoMes.emAberto)} tipo={numerosDoMes.emAberto > 0 ? "alerta" : "ok"} />
-          <Cartao titulo={todosOsMeses ? "Vencido no ano" : "Vencido no mês"} valor={brl(numerosDoMes.vencido)} tipo={numerosDoMes.vencido > 0 ? "perigo" : "ok"} />
-          {!todosOsMeses && (
-            <Cartao titulo="Acumulado em aberto (meses anteriores)" valor={brl(numerosDoMes.acumuladoAnterior)} tipo={numerosDoMes.acumuladoAnterior > 0 ? "perigo" : "ok"} />
-          )}
+          <Cartao titulo="Gerado no mês" valor={brl(numerosDoMes.gerado)} tipo="normal" />
+          <Cartao titulo="Recebido no mês" valor={brl(numerosDoMes.recebido)} tipo="ok" />
+          <Cartao titulo="Em aberto no mês" valor={brl(numerosDoMes.emAberto)} tipo={numerosDoMes.emAberto > 0 ? "alerta" : "ok"} />
+          <Cartao titulo="Acumulado em aberto (meses anteriores)" valor={brl(numerosDoMes.acumuladoAnterior)} tipo={numerosDoMes.acumuladoAnterior > 0 ? "perigo" : "ok"} />
           <Cartao
             titulo="Sem nota emitida"
             valor={brl(totalSemNotaEmitida)}
@@ -532,7 +474,7 @@ export default function Dashboard() {
                               lancamentosClienteExpandido.map((l) => (
                                 <div className="fdash-lista-item" key={l.id}>
                                   <span className="nome">{NOMES_MESES[l.mesReferencia || 0]} — {brl(l.valor)}</span>
-                                  <span className="tag">{STATUS_NOTA_LABEL[statusNota(l, hoje)]}{l.vencimento ? ` · venc. ${curta(l.vencimento)}` : ""}</span>
+                                  <span className="tag">{STATUS_FINANCEIRO_LABEL[l.statusFinanceiro] || l.statusFinanceiro}{l.vencimento ? ` · venc. ${curta(l.vencimento)}` : ""}</span>
                                 </div>
                               ))
                             )}
@@ -545,6 +487,15 @@ export default function Dashboard() {
               </table>
             </div>
           )}
+        </div>
+      </div>
+
+      <div className="fdash-secundaria">
+        <h2>Equipe e documentos</h2>
+        <div className="fdash-mini-cards">
+          <Cartao titulo="Equipe ativa" valor={String(equipeAtiva)} detalhe="Colaboradores ativos" tipo="info" />
+          <Cartao titulo="Docs vencendo" valor={String(docsVencendo)} detalhe="Próximos 30 dias" tipo={docsVencendo > 0 ? "alerta" : "ok"} />
+          <Cartao titulo="Docs vencidos" valor={String(docsVencidos)} detalhe="Requer atenção" tipo={docsVencidos > 0 ? "perigo" : "ok"} />
         </div>
       </div>
     </div>

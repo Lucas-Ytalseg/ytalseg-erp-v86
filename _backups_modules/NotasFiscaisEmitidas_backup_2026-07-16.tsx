@@ -21,30 +21,7 @@ type NotaFiscalItem = {
   financeiroId: string;
   sugestaoFinanceiroId?: string | null;
   cancelada: boolean;
-  dataRecebimento: string;
 };
-
-type StatusNota = "aberta" | "recebida" | "cancelada" | "vencida";
-
-const STATUS_LABEL: Record<StatusNota, string> = {
-  aberta: "Em aberto",
-  recebida: "Recebida",
-  cancelada: "Cancelada",
-  vencida: "Em atraso",
-};
-
-function hojeISO() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-// "Em atraso" não é um status gravado - é sempre calculado (vencimento passou e a
-// nota não está recebida nem cancelada), então nunca fica desatualizado.
-function statusNota(item: NotaFiscalItem): StatusNota {
-  if (item.cancelada) return "cancelada";
-  if (item.dataRecebimento) return "recebida";
-  if (item.vencimento && item.vencimento < hojeISO()) return "vencida";
-  return "aberta";
-}
 
 type FinanceiroResumo = {
   id: string;
@@ -173,16 +150,12 @@ export default function NotasFiscaisEmitidas() {
   const [mesFiltro, setMesFiltro] = useState("Todos");
   const [anoFiltro, setAnoFiltro] = useState("Todos");
   const [clienteFiltro, setClienteFiltro] = useState("Todos");
-  const [statusFiltro, setStatusFiltro] = useState("Todos");
   const [ordemAscendente, setOrdemAscendente] = useState(false);
   const [msg, setMsg] = useState("");
   const [carregando, setCarregando] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [pendentes, setPendentes] = useState<NotaFiscalItem[]>([]);
   const [editando, setEditando] = useState<NotaFiscalItem | null>(null);
-  const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
-  const [dataLote, setDataLote] = useState(hojeISO());
-  const [marcandoLote, setMarcandoLote] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function carregar() {
@@ -238,11 +211,10 @@ export default function NotasFiscaisEmitidas() {
       const okCliente = clienteFiltro === "Todos" || item.cliente === clienteFiltro;
       const okMes = mesFiltro === "Todos" || NOMES_MESES[item.mesReferencia || 0] === mesFiltro;
       const okAno = anoFiltro === "Todos" || String(item.anoReferencia || "") === anoFiltro;
-      const okStatus = statusFiltro === "Todos" || STATUS_LABEL[statusNota(item)] === statusFiltro;
       const okBusca = !buscaMin || `${item.cliente} ${item.numeroNota}`.toLowerCase().includes(buscaMin);
-      return okCliente && okMes && okAno && okStatus && okBusca;
+      return okCliente && okMes && okAno && okBusca;
     });
-  }, [lista, busca, mesFiltro, anoFiltro, clienteFiltro, statusFiltro]);
+  }, [lista, busca, mesFiltro, anoFiltro, clienteFiltro]);
 
   // Ordena por referência (mês/ano) — decrescente por padrão, com desempate sempre
   // alfabético por cliente. Itens sem mês+ano referência vão numa seção separada
@@ -414,85 +386,6 @@ export default function NotasFiscaisEmitidas() {
     }
   }
 
-  async function atualizarDataRecebimento(item: NotaFiscalItem, dataRecebimento: string) {
-    try {
-      const res = await fetch(`${API_BASE}/notas-fiscais/${item.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dataRecebimento }),
-      });
-      const data = await res.json();
-      if (data.status !== "ok") {
-        setMsg("Erro ao atualizar o status de recebimento da nota.");
-        return;
-      }
-      await carregar();
-    } catch (err) {
-      setMsg(`Erro ao atualizar recebimento: ${err}`);
-    }
-  }
-
-  async function marcarRecebida(item: NotaFiscalItem) {
-    const data = window.prompt("Data de recebimento (AAAA-MM-DD):", item.dataRecebimento || hojeISO());
-    if (data === null) return;
-    await atualizarDataRecebimento(item, data || hojeISO());
-  }
-
-  async function desfazerRecebida(item: NotaFiscalItem) {
-    await atualizarDataRecebimento(item, "");
-  }
-
-  function toggleSelecionado(id: string) {
-    setSelecionados((prev) => {
-      const novo = new Set(prev);
-      if (novo.has(id)) novo.delete(id);
-      else novo.add(id);
-      return novo;
-    });
-  }
-
-  const idsSelecionaveis = useMemo(() => {
-    return [...gruposOrdenados.comReferencia, ...gruposOrdenados.semReferencia]
-      .filter((i) => !i.cancelada)
-      .map((i) => i.id);
-  }, [gruposOrdenados]);
-
-  const todosSelecionados = idsSelecionaveis.length > 0 && idsSelecionaveis.every((id) => selecionados.has(id));
-
-  function toggleTodos() {
-    setSelecionados(todosSelecionados ? new Set() : new Set(idsSelecionaveis));
-  }
-
-  async function marcarSelecionadasRecebidas() {
-    if (selecionados.size === 0) return;
-    setMarcandoLote(true);
-    try {
-      const res = await fetch(`${API_BASE}/notas-fiscais/marcar-recebidas`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: Array.from(selecionados), dataRecebimento: dataLote || hojeISO() }),
-      });
-      const data = await res.json();
-      if (data.status !== "ok") {
-        setMsg("Erro ao marcar as notas selecionadas como recebidas.");
-        return;
-      }
-      const qtdAtualizadas = (data.atualizadas || []).length;
-      const qtdPuladas = (data.puladas || []).length;
-      setMsg(
-        qtdPuladas > 0
-          ? `${qtdAtualizadas} nota(s) marcada(s) como recebida(s). ${qtdPuladas} pulada(s) por estarem canceladas.`
-          : `${qtdAtualizadas} nota(s) marcada(s) como recebida(s).`
-      );
-      setSelecionados(new Set());
-      await carregar();
-    } catch (err) {
-      setMsg(`Erro ao marcar em lote: ${err}`);
-    } finally {
-      setMarcandoLote(false);
-    }
-  }
-
   function financeiroPorId(id?: string | null) {
     if (!id) return null;
     return financeiro.find((f) => f.id === id) || null;
@@ -527,14 +420,7 @@ export default function NotasFiscaisEmitidas() {
         .nfe-sugestao { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e3a8a; border-radius: 12px; padding: 10px 12px; font-size: 13px; font-weight: 700; }
         .nfe-badge-cancelada { display: inline-flex; margin-left: 8px; padding: 3px 9px; border-radius: 999px; background: #fee2e2; color: #991b1b; font-size: 11px; font-weight: 1000; }
         .nfe-linha-cancelada { opacity: .55; }
-        .nfe-linha-vencida { background: #fef2f2; }
         .nfe-grupo-header td { background: #f9fafb; font-weight: 1000; color: #374151; padding: 8px 12px !important; }
-        .nfe-badge-status { display: inline-flex; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 1000; white-space: nowrap; }
-        .nfe-badge-aberta { background: #e5e7eb; color: #374151; }
-        .nfe-badge-recebida { background: #dcfce7; color: #166534; }
-        .nfe-badge-vencida { background: #fee2e2; color: #991b1b; }
-        .nfe-lote-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 14px; padding: 10px 14px; }
-        .nfe-lote-bar strong { color: #1e3a8a; }
 
         @media (max-width: 900px) {
           .nfe-confirm-grid { grid-template-columns: 1fr 1fr; }
@@ -616,13 +502,6 @@ export default function NotasFiscaisEmitidas() {
         <select className="nfe-select" value={anoFiltro} onChange={(e) => setAnoFiltro(e.target.value)}>
           {anosDisponiveis.map((a) => <option key={a}>{a}</option>)}
         </select>
-        <select className="nfe-select" value={statusFiltro} onChange={(e) => setStatusFiltro(e.target.value)}>
-          <option>Todos</option>
-          <option>Em aberto</option>
-          <option>Recebidas</option>
-          <option>Em atraso</option>
-          <option>Canceladas</option>
-        </select>
         <button className="nfe-btn" onClick={() => setOrdemAscendente((v) => !v)}>
           {ordemAscendente ? "Mais antigas primeiro" : "Mais recentes primeiro"}
         </button>
@@ -630,41 +509,13 @@ export default function NotasFiscaisEmitidas() {
 
       <div className="nfe-total">Total filtrado: {brl(totalFiltrado)}</div>
 
-      {selecionados.size > 0 && (
-        <div className="nfe-lote-bar">
-          <strong>{selecionados.size} nota(s) selecionada(s)</strong>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 800, fontSize: 13 }}>
-            Data de recebimento:
-            <input
-              className="nfe-input"
-              type="date"
-              value={dataLote}
-              onChange={(e) => setDataLote(e.target.value)}
-            />
-          </label>
-          <button className="nfe-btn nfe-btn-green" onClick={marcarSelecionadasRecebidas} disabled={marcandoLote}>
-            {marcandoLote ? "Marcando..." : "Marcar selecionadas como recebidas"}
-          </button>
-          <button className="nfe-btn" onClick={() => setSelecionados(new Set())}>Limpar seleção</button>
-        </div>
-      )}
-
       <div className="nfe-card">
         <table className="nfe-table">
           <thead>
             <tr>
-              <th>
-                <input
-                  type="checkbox"
-                  checked={todosSelecionados}
-                  onChange={toggleTodos}
-                  title="Selecionar todas as notas filtradas (exceto canceladas)"
-                />
-              </th>
               <th>Nº Nota</th>
               <th>Cliente</th>
               <th>Mês Referência</th>
-              <th>Status</th>
               <th>Emissão</th>
               <th>Vencimento</th>
               <th>Valor</th>
@@ -675,7 +526,7 @@ export default function NotasFiscaisEmitidas() {
             {gruposOrdenados.comReferencia.map((item) => renderLinhaNota(item))}
             {gruposOrdenados.semReferencia.length > 0 && (
               <tr className="nfe-grupo-header">
-                <td colSpan={9}>Sem referência</td>
+                <td colSpan={7}>Sem referência</td>
               </tr>
             )}
             {gruposOrdenados.semReferencia.map((item) => renderLinhaNota(item))}
@@ -690,33 +541,14 @@ export default function NotasFiscaisEmitidas() {
   );
 
   function renderLinhaNota(item: NotaFiscalItem) {
-    const status = statusNota(item);
-    const linhaClasse = item.cancelada ? "nfe-linha-cancelada" : status === "vencida" ? "nfe-linha-vencida" : "";
     return (
-      <tr key={item.id} className={linhaClasse}>
-        <td data-label="Selecionar">
-          {!item.cancelada && (
-            <input
-              type="checkbox"
-              checked={selecionados.has(item.id)}
-              onChange={() => toggleSelecionado(item.id)}
-            />
-          )}
-        </td>
+      <tr key={item.id} className={item.cancelada ? "nfe-linha-cancelada" : ""}>
         <td data-label="Nº Nota">{item.numeroNota || "-"}</td>
         <td data-label="Cliente">
           {item.cliente || "-"}
           {item.cancelada && <span className="nfe-badge-cancelada">CANCELADA</span>}
         </td>
         <td data-label="Mês Referência">{referenciaLabel(item)}</td>
-        <td data-label="Status">
-          <span className={`nfe-badge-status nfe-badge-${status}`}>{STATUS_LABEL[status]}</span>
-          {status === "recebida" && (
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", marginTop: 4 }}>
-              em {dataCurtaBR(item.dataRecebimento)}
-            </div>
-          )}
-        </td>
         <td data-label="Emissão">{dataCurtaBR(item.dataEmissao)}</td>
         <td data-label="Vencimento">{dataCurtaBR(item.vencimento)}</td>
         <td data-label="Valor">{brl(item.valor)}</td>
@@ -731,13 +563,6 @@ export default function NotasFiscaisEmitidas() {
               </>
             )}
             <button className="nfe-btn" onClick={() => setEditando(item)}>Editar</button>
-            {!item.cancelada && (
-              status === "recebida" ? (
-                <button className="nfe-btn" onClick={() => desfazerRecebida(item)}>Desfazer recebimento</button>
-              ) : (
-                <button className="nfe-btn nfe-btn-green" onClick={() => marcarRecebida(item)}>Marcar como recebida</button>
-              )
-            )}
             <button className="nfe-btn" onClick={() => alternarCancelada(item)}>
               {item.cancelada ? "Desfazer cancelamento" : "Marcar como cancelada"}
             </button>

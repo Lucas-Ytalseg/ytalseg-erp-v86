@@ -486,37 +486,20 @@ def _resolver_financeiro_para_nota(nota_row, financeiro_rows):
         return f
     return None
 
-def _sincronizar_financeiro_com_nota(conn, financeiro_id: str, data_recebimento: str):
-    """Sincronização leve nota -> financeiro: ao marcar (ou desfazer) uma nota como
-    recebida, reflete no lançamento vinculado, se houver. Só desfaz o status do
-    lançamento se ele estiver 'recebido' (evita mexer em 'nota_cancelada' etc)."""
-    if not financeiro_id:
-        return
-    if data_recebimento:
-        conn.execute(
-            "UPDATE financeiro SET status = 'recebido', data_recebimento = ? WHERE id = ?",
-            (data_recebimento, financeiro_id),
-        )
-    else:
-        conn.execute(
-            "UPDATE financeiro SET status = 'pendente', data_recebimento = '' WHERE id = ? AND status = 'recebido'",
-            (financeiro_id,),
-        )
-
 def montar_dashboard_financeiro():
-    """Monta os dados que alimentam o Dashboard (aba Principal). A partir da v87, o
-    status de recebimento (recebida/aberta/vencida) é sempre o da PRÓPRIA nota fiscal
-    (campos cancelada/data_recebimento/vencimento, já incluídos por row_nota_fiscal) -
-    o Dashboard não cruza mais com o financeiro para calcular esses totais. O cruzamento
-    com o financeiro aqui serve só para duas coisas que continuam sendo úteis: o cartão
-    informativo 'sem nota emitida' e o mapa de vínculos usado pelo 'Visualizar' do
-    histórico de pendências (NotaFiscal.tsx)."""
+    """Monta os dados que alimentam o Dashboard (aba Principal): pra cada nota fiscal
+    não cancelada, resolve o lançamento do financeiro correspondente (vínculo direto ou
+    casamento por cliente+valor+mês/ano) e calcula se está recebida/aberta/vencida.
+    Também separa os lançamentos do financeiro sem nenhuma nota correspondente ('sem nota
+    emitida') e monta um mapa de vínculos (financeiro_id -> notaId/historicoPdfId) usado
+    também pelo 'Visualizar' do histórico de pendências (NotaFiscal.tsx)."""
     conn = conectar_db()
     notas = conn.execute("SELECT * FROM notas_fiscais WHERE COALESCE(cancelada, 0) = 0").fetchall()
     financeiro_rows = conn.execute("SELECT * FROM financeiro").fetchall()
     historico_rows = conn.execute("SELECT * FROM historico_pdfs").fetchall()
     conn.close()
 
+    hoje = datetime.now().strftime("%Y-%m-%d")
     financeiro_usados = set()
     notas_enriquecidas = []
     for n in notas:
@@ -525,8 +508,16 @@ def montar_dashboard_financeiro():
         if f:
             financeiro_usados.add(f["id"])
             item["financeiroIdResolvido"] = f["id"]
+            if (f["status"] or "") == "recebido":
+                item["statusFinanceiro"] = "recebido"
+                item["dataRecebimento"] = f["data_recebimento"] or ""
+            else:
+                item["statusFinanceiro"] = "vencido" if (item["vencimento"] and item["vencimento"] < hoje) else "aberto"
+                item["dataRecebimento"] = ""
         else:
             item["financeiroIdResolvido"] = None
+            item["statusFinanceiro"] = "vencido" if (item["vencimento"] and item["vencimento"] < hoje) else "aberto"
+            item["dataRecebimento"] = ""
         notas_enriquecidas.append(item)
 
     sem_nota_emitida = [
@@ -654,11 +645,9 @@ def init_db():
             cur.execute(f"ALTER TABLE historico_pdfs ADD COLUMN {nome_coluna} {definicao}")
 
     # ===== MIGRAÇÃO: nota fiscal cancelada (registro fica, só sai dos totais) =====
-    # ===== MIGRAÇÃO: status de recebimento da nota (fonte da verdade é a própria nota) =====
     colunas_notas = {row["name"] for row in cur.execute("PRAGMA table_info(notas_fiscais)").fetchall()}
     novas_colunas_notas = {
         "cancelada": "INTEGER DEFAULT 0",
-        "data_recebimento": "TEXT DEFAULT ''",
     }
     for nome_coluna, definicao in novas_colunas_notas.items():
         if nome_coluna not in colunas_notas:
@@ -738,11 +727,6 @@ class NotaFiscalEditPayload(BaseModel):
     valor: Optional[float] = None
     codigoVerificacao: Optional[str] = None
     cancelada: Optional[bool] = None
-    dataRecebimento: Optional[str] = None
-
-class MarcarRecebidasPayload(BaseModel):
-    ids: List[str]
-    dataRecebimento: str
 
 class VincularFinanceiroPayload(BaseModel):
     financeiroId: str
@@ -819,7 +803,6 @@ def row_nota_fiscal(row):
         "criadoEm": row["criado_em"],
         "financeiroId": row["financeiro_id"] or "",
         "cancelada": bool(row["cancelada"]) if "cancelada" in chaves and row["cancelada"] is not None else False,
-        "dataRecebimento": (row["data_recebimento"] if "data_recebimento" in chaves else "") or "",
     }
 
 def row_equipe(row):
@@ -915,17 +898,7 @@ def salvar_financeiro(payload: FinanceiroPayload):
             mes_ref, ano_ref,
         ),
     )
-    # Sincronização leve financeiro -> nota: ao marcar o lançamento como recebido,
-    # se houver nota fiscal vinculada e ela ainda não tiver data de recebimento,
-    # usa a mesma data. Só nesse sentido (marcar) - desfazer fica só na nota.
-    if payload.status == "recebido":
-        conn.execute(
-            "UPDATE notas_fiscais SET data_recebimento = ? "
-            "WHERE financeiro_id = ? AND COALESCE(cancelada, 0) = 0 AND COALESCE(data_recebimento, '') = ''",
-            (payload.dataRecebimento or datetime.now().strftime("%Y-%m-%d"), item_id),
-        )
-        conn.commit()
-
+    conn.commit()
     row = conn.execute("SELECT * FROM financeiro WHERE id = ?", (item_id,)).fetchone()
     conn.close()
     return {"status": "ok", "lancamento": row_financeiro(row)}
@@ -1155,32 +1128,6 @@ def listar_notas_fiscais(mes: Optional[int] = None, ano: Optional[int] = None, c
         itens = [i for i in itens if c in i["cliente"].lower()]
     return {"status": "ok", "notas": itens}
 
-@app.post("/notas-fiscais/marcar-recebidas")
-def marcar_notas_recebidas(payload: MarcarRecebidasPayload):
-    """Marca em lote uma lista de notas como recebidas, todas com a mesma data.
-    Notas canceladas são puladas (não faz sentido marcar cancelada como recebida)."""
-    if not payload.ids:
-        return {"status": "erro", "erro": "Nenhuma nota selecionada"}
-    conn = conectar_db()
-    atualizadas = []
-    puladas = []
-    for item_id in payload.ids:
-        row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
-        if not row:
-            continue
-        if row["cancelada"]:
-            puladas.append(item_id)
-            continue
-        conn.execute(
-            "UPDATE notas_fiscais SET data_recebimento = ? WHERE id = ?",
-            (payload.dataRecebimento, item_id),
-        )
-        _sincronizar_financeiro_com_nota(conn, row["financeiro_id"] or "", payload.dataRecebimento)
-        atualizadas.append(item_id)
-    conn.commit()
-    conn.close()
-    return {"status": "ok", "atualizadas": atualizadas, "puladas": puladas}
-
 @app.patch("/notas-fiscais/{item_id}")
 def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload):
     conn = conectar_db()
@@ -1194,7 +1141,6 @@ def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload):
         "mesReferencia": "mes_referencia", "anoReferencia": "ano_referencia",
         "dataEmissao": "data_emissao", "vencimento": "vencimento", "valor": "valor",
         "codigoVerificacao": "codigo_verificacao", "cancelada": "cancelada",
-        "dataRecebimento": "data_recebimento",
     }
     campos = []
     valores = []
@@ -1210,10 +1156,6 @@ def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload):
     if campos:
         valores.append(item_id)
         conn.execute(f"UPDATE notas_fiscais SET {', '.join(campos)} WHERE id = ?", valores)
-        # dataRecebimento explícito ("" = desfazer, "AAAA-MM-DD" = marcar) -> reflete
-        # no lançamento vinculado, se houver (sincronização leve nota -> financeiro).
-        if dados.get("dataRecebimento") is not None:
-            _sincronizar_financeiro_com_nota(conn, row["financeiro_id"] or "", dados["dataRecebimento"])
         conn.commit()
 
     row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()

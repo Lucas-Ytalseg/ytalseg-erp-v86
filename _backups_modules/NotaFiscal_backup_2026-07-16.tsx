@@ -494,13 +494,7 @@ ${form.descricao}
                         <a className="btn-gray" href={`${API_BASE}/historico-pdfs/${historico.id}/arquivo`} target="_blank" rel="noreferrer">Ver relatório</a>
                       )}
                       <button className="btn-gray" onClick={() => abrirDetalhe(l)}>{temDocumento ? "Ver detalhes" : "Visualizar"}</button>
-                      <button
-                        className="btn-gray"
-                        title="Copia um resumo deste lançamento (cliente, referência, valor e número da nota) para colar em outro lugar, como WhatsApp, e-mail ou uma anotação — não é o pacote de emissão da nota."
-                        onClick={() => copiarTexto(`Cliente: ${l.cliente}\nReferência: ${l.referencia}\nValor: ${brl(l.valor)}\nNota: ${l.nota || "Pendente"}`, "Dados da nota")}
-                      >
-                        Copiar resumo
-                      </button>
+                      <button className="btn-gray" onClick={() => copiarTexto(`Cliente: ${l.cliente}\nReferência: ${l.referencia}\nValor: ${brl(l.valor)}\nNota: ${l.nota || "Pendente"}`, "Dados da nota")}>Copiar</button>
                       <button className="btn-gray" onClick={() => excluirLancamento(l.id)}>Excluir</button>
                     </div>
                   </td>
