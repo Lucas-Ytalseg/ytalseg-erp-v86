@@ -32,7 +32,6 @@ const STATUS_LISTA = [
   { valor: "negociacao", label: "Em negociação", cor: "#0e7490", fundo: "#ecfeff" },
   { valor: "aprovado", label: "Aprovado", cor: "#047857", fundo: "#ecfdf5" },
   { valor: "recebido", label: "Recebido", cor: "#15803d", fundo: "#dcfce7" },
-  { valor: "nota_cancelada", label: "Nota cancelada", cor: "#6b7280", fundo: "#f1f5f9" },
 ];
 
 function statusInfo(valor: string) {
@@ -56,7 +55,7 @@ function curta(iso?: string) {
 }
 
 function estaVencido(l: Lancamento) {
-  return !!l.vencimento && l.vencimento < hoje() && l.status !== "recebido" && l.status !== "nota_cancelada";
+  return !!l.vencimento && l.vencimento < hoje() && l.status !== "recebido";
 }
 
 // A data de envio é a fonte da verdade: se foi preenchida, a nota foi enviada,
@@ -150,7 +149,7 @@ export default function Financeiro() {
   const itensAnteriores = useMemo(() => {
     if (todosOsMeses) return [];
     return lista.filter((l) => {
-      if (l.status === "recebido" || l.status === "nota_cancelada") return false;
+      if (l.status === "recebido") return false;
       const ano = Number(l.anoReferencia) || 0;
       const mes = Number(l.mesReferencia) || 0;
       return ano < anoSelecionado || (ano === anoSelecionado && mes < mesSelecionado);
@@ -170,7 +169,7 @@ export default function Financeiro() {
   const itensAnterioresFiltrados = useMemo(() => aplicarFiltros(itensAnteriores), [itensAnteriores, busca, statusFiltro]);
 
   const totaisMes = useMemo(() => {
-    const base = (todosOsMeses ? itensDoMesFiltrados : itensDoMes).filter((x) => x.status !== "nota_cancelada");
+    const base = todosOsMeses ? itensDoMesFiltrados : itensDoMes;
     const total = base.reduce((a, x) => a + Number(x.valor || 0), 0);
     const recebido = base.filter((x) => x.status === "recebido").reduce((a, x) => a + Number(x.valor || 0), 0);
     const pendente = total - recebido;
@@ -310,10 +309,9 @@ export default function Financeiro() {
 
   function exportarResumo() {
     const todos = resumoPeriodo === "todos";
-    const itens = (todos
+    const itens = todos
       ? lista
-      : lista.filter((l) => Number(l.mesReferencia) === exportMes && Number(l.anoReferencia) === exportAno)
-    ).filter((l) => l.status !== "nota_cancelada");
+      : lista.filter((l) => Number(l.mesReferencia) === exportMes && Number(l.anoReferencia) === exportAno);
     const h = hoje();
 
     const recebidos: Lancamento[] = [];
@@ -409,7 +407,7 @@ export default function Financeiro() {
       alert("Selecione um cliente para exportar.");
       return;
     }
-    const itens = lista.filter((l) => l.cliente === clienteExportar && l.status !== "nota_cancelada");
+    const itens = lista.filter((l) => l.cliente === clienteExportar);
     const linhas = itens.map((l) => linhaResumo(l, true));
     const total = itens.reduce((a, x) => a + Number(x.valor || 0), 0);
     const recebido = itens.filter((x) => x.status === "recebido").reduce((a, x) => a + Number(x.valor || 0), 0);
@@ -502,17 +500,16 @@ export default function Financeiro() {
           {itens.map((l) => {
             const info = statusInfo(l.status);
             const atrasado = estaVencido(l);
-            const cancelada = l.status === "nota_cancelada";
             return (
               <React.Fragment key={l.id}>
-                <tr className={atrasado ? "linha-vencida" : cancelada ? "linha-cancelada" : ""}>
+                <tr className={atrasado ? "linha-vencida" : ""}>
                   <td data-label="Cliente">
-                    <div style={{ fontWeight: 900 }} className={cancelada ? "texto-cancelado" : ""}>{l.cliente}</div>
+                    <div style={{ fontWeight: 900 }}>{l.cliente}</div>
                     {l.observacao && <div className="obs-resumo">{l.observacao}</div>}
                   </td>
-                  <td data-label="Referência" className={cancelada ? "texto-cancelado" : ""}>{l.referencia || "-"}</td>
-                  <td data-label="Valor" className={cancelada ? "texto-cancelado" : ""}>{brl(l.valor)}</td>
-                  <td data-label="Vencimento" className={atrasado ? "texto-vencido" : cancelada ? "texto-cancelado" : ""}>
+                  <td data-label="Referência">{l.referencia || "-"}</td>
+                  <td data-label="Valor">{brl(l.valor)}</td>
+                  <td data-label="Vencimento" className={atrasado ? "texto-vencido" : ""}>
                     {curta(l.vencimento)}{atrasado ? " (vencido)" : ""}
                   </td>
                   <td data-label="Nº NF">{l.nota || "—"}</td>
@@ -524,7 +521,7 @@ export default function Financeiro() {
                   <td data-label="Ações">
                     <div className="actions">
                       <button className="btn" onClick={() => abrirEdicao(l)}>Editar</button>
-                      {l.status !== "recebido" && l.status !== "nota_cancelada" && (
+                      {l.status !== "recebido" && (
                         <button className="btn btn-green" onClick={() => marcarRecebidoRapido(l)}>Receber</button>
                       )}
                       <button className="btn btn-red" onClick={() => excluir(l)}>Excluir</button>
@@ -583,8 +580,6 @@ export default function Financeiro() {
         select.hist-select,input.hist-input{padding:9px 11px}
         .linha-vencida{background:#fff1f1}
         .texto-vencido{color:#b91c1c;font-weight:1000}
-        .linha-cancelada{opacity:.55}
-        .texto-cancelado{text-decoration:line-through}
         .obs-resumo{font-size:11px;color:#6b7280;margin-top:2px}
         .vazio{color:#6b7280;font-weight:800}
         .rotulo-exportar{font-size:12px;font-weight:900;color:#374151;display:flex;align-items:center;white-space:nowrap}

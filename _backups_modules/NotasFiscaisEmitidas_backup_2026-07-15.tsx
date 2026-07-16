@@ -20,7 +20,6 @@ type NotaFiscalItem = {
   criadoEm: string;
   financeiroId: string;
   sugestaoFinanceiroId?: string | null;
-  cancelada: boolean;
 };
 
 type FinanceiroResumo = {
@@ -150,7 +149,6 @@ export default function NotasFiscaisEmitidas() {
   const [mesFiltro, setMesFiltro] = useState("Todos");
   const [anoFiltro, setAnoFiltro] = useState("Todos");
   const [clienteFiltro, setClienteFiltro] = useState("Todos");
-  const [ordemAscendente, setOrdemAscendente] = useState(false);
   const [msg, setMsg] = useState("");
   const [carregando, setCarregando] = useState(false);
   const [enviando, setEnviando] = useState(false);
@@ -207,42 +205,18 @@ export default function NotasFiscaisEmitidas() {
 
   const filtrados = useMemo(() => {
     const buscaMin = busca.trim().toLowerCase();
-    return lista.filter((item) => {
-      const okCliente = clienteFiltro === "Todos" || item.cliente === clienteFiltro;
-      const okMes = mesFiltro === "Todos" || NOMES_MESES[item.mesReferencia || 0] === mesFiltro;
-      const okAno = anoFiltro === "Todos" || String(item.anoReferencia || "") === anoFiltro;
-      const okBusca = !buscaMin || `${item.cliente} ${item.numeroNota}`.toLowerCase().includes(buscaMin);
-      return okCliente && okMes && okAno && okBusca;
-    });
+    return lista
+      .filter((item) => {
+        const okCliente = clienteFiltro === "Todos" || item.cliente === clienteFiltro;
+        const okMes = mesFiltro === "Todos" || NOMES_MESES[item.mesReferencia || 0] === mesFiltro;
+        const okAno = anoFiltro === "Todos" || String(item.anoReferencia || "") === anoFiltro;
+        const okBusca = !buscaMin || `${item.cliente} ${item.numeroNota}`.toLowerCase().includes(buscaMin);
+        return okCliente && okMes && okAno && okBusca;
+      })
+      .sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime());
   }, [lista, busca, mesFiltro, anoFiltro, clienteFiltro]);
 
-  // Ordena por referência (mês/ano) — decrescente por padrão, com desempate sempre
-  // alfabético por cliente. Itens sem mês+ano referência vão numa seção separada
-  // no final, ordenada só por cliente.
-  const gruposOrdenados = useMemo(() => {
-    const comReferencia = filtrados.filter((i) => i.mesReferencia && i.anoReferencia);
-    const semReferencia = filtrados.filter((i) => !i.mesReferencia || !i.anoReferencia);
-    const dir = ordemAscendente ? 1 : -1;
-
-    comReferencia.sort((a, b) => {
-      const anoA = a.anoReferencia || 0;
-      const anoB = b.anoReferencia || 0;
-      if (anoA !== anoB) return dir * (anoA - anoB);
-      const mesA = a.mesReferencia || 0;
-      const mesB = b.mesReferencia || 0;
-      if (mesA !== mesB) return dir * (mesA - mesB);
-      return a.cliente.localeCompare(b.cliente, "pt-BR");
-    });
-
-    semReferencia.sort((a, b) => a.cliente.localeCompare(b.cliente, "pt-BR"));
-
-    return { comReferencia, semReferencia };
-  }, [filtrados, ordemAscendente]);
-
-  const totalFiltrado = useMemo(
-    () => filtrados.filter((item) => !item.cancelada).reduce((soma, item) => soma + Number(item.valor || 0), 0),
-    [filtrados]
-  );
+  const totalFiltrado = useMemo(() => filtrados.reduce((soma, item) => soma + Number(item.valor || 0), 0), [filtrados]);
 
   function abrirSeletor() {
     inputRef.current?.click();
@@ -368,24 +342,6 @@ export default function NotasFiscaisEmitidas() {
     await carregar();
   }
 
-  async function alternarCancelada(item: NotaFiscalItem) {
-    try {
-      const res = await fetch(`${API_BASE}/notas-fiscais/${item.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cancelada: !item.cancelada }),
-      });
-      const data = await res.json();
-      if (data.status !== "ok") {
-        setMsg("Erro ao atualizar o cancelamento da nota.");
-        return;
-      }
-      await carregar();
-    } catch (err) {
-      setMsg(`Erro ao atualizar o cancelamento: ${err}`);
-    }
-  }
-
   function financeiroPorId(id?: string | null) {
     if (!id) return null;
     return financeiro.find((f) => f.id === id) || null;
@@ -418,9 +374,6 @@ export default function NotasFiscaisEmitidas() {
         .nfe-confirm-field label { display: block; font-size: 11px; font-weight: 1000; color: #6b7280; margin-bottom: 4px; }
         .nfe-confirm-field input, .nfe-confirm-field select { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px; font-size: 13px; box-sizing: border-box; }
         .nfe-sugestao { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e3a8a; border-radius: 12px; padding: 10px 12px; font-size: 13px; font-weight: 700; }
-        .nfe-badge-cancelada { display: inline-flex; margin-left: 8px; padding: 3px 9px; border-radius: 999px; background: #fee2e2; color: #991b1b; font-size: 11px; font-weight: 1000; }
-        .nfe-linha-cancelada { opacity: .55; }
-        .nfe-grupo-header td { background: #f9fafb; font-weight: 1000; color: #374151; padding: 8px 12px !important; }
 
         @media (max-width: 900px) {
           .nfe-confirm-grid { grid-template-columns: 1fr 1fr; }
@@ -502,9 +455,6 @@ export default function NotasFiscaisEmitidas() {
         <select className="nfe-select" value={anoFiltro} onChange={(e) => setAnoFiltro(e.target.value)}>
           {anosDisponiveis.map((a) => <option key={a}>{a}</option>)}
         </select>
-        <button className="nfe-btn" onClick={() => setOrdemAscendente((v) => !v)}>
-          {ordemAscendente ? "Mais antigas primeiro" : "Mais recentes primeiro"}
-        </button>
       </div>
 
       <div className="nfe-total">Total filtrado: {brl(totalFiltrado)}</div>
@@ -523,13 +473,30 @@ export default function NotasFiscaisEmitidas() {
             </tr>
           </thead>
           <tbody>
-            {gruposOrdenados.comReferencia.map((item) => renderLinhaNota(item))}
-            {gruposOrdenados.semReferencia.length > 0 && (
-              <tr className="nfe-grupo-header">
-                <td colSpan={7}>Sem referência</td>
+            {filtrados.map((item) => (
+              <tr key={item.id}>
+                <td data-label="Nº Nota">{item.numeroNota || "-"}</td>
+                <td data-label="Cliente">{item.cliente || "-"}</td>
+                <td data-label="Mês Referência">{referenciaLabel(item)}</td>
+                <td data-label="Emissão">{dataCurtaBR(item.dataEmissao)}</td>
+                <td data-label="Vencimento">{dataCurtaBR(item.vencimento)}</td>
+                <td data-label="Valor">{brl(item.valor)}</td>
+                <td data-label="Ações">
+                  <div className="nfe-actions">
+                    {item.temArquivo && (
+                      <>
+                        <button className="nfe-btn" onClick={() => visualizar(item)}>Visualizar</button>
+                        <a className="nfe-btn" href={`${API_BASE}/notas-fiscais/${item.id}/arquivo?baixar=1`} target="_blank" rel="noreferrer">
+                          Baixar
+                        </a>
+                      </>
+                    )}
+                    <button className="nfe-btn" onClick={() => setEditando(item)}>Editar</button>
+                    <button className="nfe-btn nfe-btn-red" onClick={() => excluir(item)}>Excluir</button>
+                  </div>
+                </td>
               </tr>
-            )}
-            {gruposOrdenados.semReferencia.map((item) => renderLinhaNota(item))}
+            ))}
           </tbody>
         </table>
 
@@ -539,37 +506,4 @@ export default function NotasFiscaisEmitidas() {
       </div>
     </div>
   );
-
-  function renderLinhaNota(item: NotaFiscalItem) {
-    return (
-      <tr key={item.id} className={item.cancelada ? "nfe-linha-cancelada" : ""}>
-        <td data-label="Nº Nota">{item.numeroNota || "-"}</td>
-        <td data-label="Cliente">
-          {item.cliente || "-"}
-          {item.cancelada && <span className="nfe-badge-cancelada">CANCELADA</span>}
-        </td>
-        <td data-label="Mês Referência">{referenciaLabel(item)}</td>
-        <td data-label="Emissão">{dataCurtaBR(item.dataEmissao)}</td>
-        <td data-label="Vencimento">{dataCurtaBR(item.vencimento)}</td>
-        <td data-label="Valor">{brl(item.valor)}</td>
-        <td data-label="Ações">
-          <div className="nfe-actions">
-            {item.temArquivo && (
-              <>
-                <button className="nfe-btn" onClick={() => visualizar(item)}>Visualizar</button>
-                <a className="nfe-btn" href={`${API_BASE}/notas-fiscais/${item.id}/arquivo?baixar=1`} target="_blank" rel="noreferrer">
-                  Baixar
-                </a>
-              </>
-            )}
-            <button className="nfe-btn" onClick={() => setEditando(item)}>Editar</button>
-            <button className="nfe-btn" onClick={() => alternarCancelada(item)}>
-              {item.cancelada ? "Desfazer cancelamento" : "Marcar como cancelada"}
-            </button>
-            <button className="nfe-btn nfe-btn-red" onClick={() => excluir(item)}>Excluir</button>
-          </div>
-        </td>
-      </tr>
-    );
-  }
 }

@@ -13,7 +13,6 @@ const STATUS_LISTA = [
   { valor: "negociacao", label: "Em negociação" },
   { valor: "aprovado", label: "Aprovado" },
   { valor: "recebido", label: "Recebido" },
-  { valor: "nota_cancelada", label: "Nota cancelada" },
 ];
 
 function statusLabel(valor: string) {
@@ -48,10 +47,6 @@ type Lancamento = {
   mesReferencia?: number | null;
   anoReferencia?: number | null;
 };
-
-type VinculoInfo = { notaId?: string; historicoPdfId?: string };
-
-type DocResumo = { id: string; temArquivo: boolean };
 
 type NotaForm = {
   cliente: string;
@@ -115,18 +110,13 @@ export default function NotaFiscal() {
   const [erro, setErro] = useState("");
   const [copiado, setCopiado] = useState("");
   const [detalheAberto, setDetalheAberto] = useState<Lancamento | null>(null);
-  const [notasPainel, setNotasPainel] = useState<DocResumo[]>([]);
-  const [historicoPdfs, setHistoricoPdfs] = useState<DocResumo[]>([]);
-  const [vinculosFinanceiro, setVinculosFinanceiro] = useState<Record<string, VinculoInfo>>({});
 
   async function carregar() {
     try {
       setErro("");
-      const [resClientes, resFin, resDash, resHist] = await Promise.all([
+      const [resClientes, resFin] = await Promise.all([
         fetch(`${API_BASE}/empresas`),
         fetch(`${API_BASE}/financeiro`).catch(() => null),
-        fetch(`${API_BASE}/dashboard/financeiro-notas`).catch(() => null),
-        fetch(`${API_BASE}/historico-pdfs`).catch(() => null),
       ]);
 
       const dataClientes = await resClientes.json();
@@ -140,38 +130,9 @@ export default function NotaFiscal() {
           setFinanceiro(dataFin.lancamentos || []);
         }
       }
-
-      // Documento real vinculado a cada lançamento (nota fiscal e/ou relatório do
-      // Histórico) — o casamento cliente+valor+mês/ano já é feito uma vez só no
-      // backend (mesma lógica usada pelo Dashboard), aqui só consultamos o mapa.
-      if (resDash) {
-        const dataDash = await resDash.json();
-        if (dataDash.status === "ok") {
-          setNotasPainel((dataDash.notas || []).map((n: any) => ({ id: n.id, temArquivo: !!n.temArquivo })));
-          setVinculosFinanceiro(dataDash.vinculosFinanceiro || {});
-        }
-      }
-      if (resHist) {
-        const dataHist = await resHist.json();
-        if (dataHist.status === "ok") {
-          setHistoricoPdfs((dataHist.historico || []).map((h: any) => ({ id: h.id, temArquivo: !!h.temArquivo })));
-        }
-      }
     } catch {
       setErro("Não consegui carregar clientes/financeiro. Confira o backend.");
     }
-  }
-
-  function notaVinculada(lancId: string) {
-    const notaId = vinculosFinanceiro[lancId]?.notaId;
-    if (!notaId) return null;
-    return notasPainel.find((n) => n.id === notaId) || null;
-  }
-
-  function historicoVinculado(lancId: string) {
-    const histId = vinculosFinanceiro[lancId]?.historicoPdfId;
-    if (!histId) return null;
-    return historicoPdfs.find((h) => h.id === histId) || null;
   }
 
   useEffect(() => {
@@ -474,33 +435,22 @@ ${form.descricao}
             {financeiro.length === 0 && (
               <tr><td colSpan={6}>Nenhuma nota ou lançamento encontrado.</td></tr>
             )}
-            {financeiro.map((l) => {
-              const nota = notaVinculada(l.id);
-              const historico = historicoVinculado(l.id);
-              const temDocumento = !!(nota?.temArquivo || historico?.temArquivo);
-              return (
-                <tr key={`hist-${l.id}`}>
-                  <td>{l.cliente}</td>
-                  <td>{l.referencia || "-"}</td>
-                  <td>{brl(l.valor)}</td>
-                  <td>{l.nota || "Pendente"}</td>
-                  <td>{l.status}</td>
-                  <td>
-                    <div className="actions">
-                      {nota?.temArquivo && (
-                        <a className="btn-gray" href={`${API_BASE}/notas-fiscais/${nota.id}/arquivo`} target="_blank" rel="noreferrer">Ver nota</a>
-                      )}
-                      {historico?.temArquivo && (
-                        <a className="btn-gray" href={`${API_BASE}/historico-pdfs/${historico.id}/arquivo`} target="_blank" rel="noreferrer">Ver relatório</a>
-                      )}
-                      <button className="btn-gray" onClick={() => abrirDetalhe(l)}>{temDocumento ? "Ver detalhes" : "Visualizar"}</button>
-                      <button className="btn-gray" onClick={() => copiarTexto(`Cliente: ${l.cliente}\nReferência: ${l.referencia}\nValor: ${brl(l.valor)}\nNota: ${l.nota || "Pendente"}`, "Dados da nota")}>Copiar</button>
-                      <button className="btn-gray" onClick={() => excluirLancamento(l.id)}>Excluir</button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+            {financeiro.map((l) => (
+              <tr key={`hist-${l.id}`}>
+                <td>{l.cliente}</td>
+                <td>{l.referencia || "-"}</td>
+                <td>{brl(l.valor)}</td>
+                <td>{l.nota || "Pendente"}</td>
+                <td>{l.status}</td>
+                <td>
+                  <div className="actions">
+                    <button className="btn-gray" onClick={() => abrirDetalhe(l)}>Visualizar</button>
+                    <button className="btn-gray" onClick={() => copiarTexto(`Cliente: ${l.cliente}\nReferência: ${l.referencia}\nValor: ${brl(l.valor)}\nNota: ${l.nota || "Pendente"}`, "Dados da nota")}>Copiar</button>
+                    <button className="btn-gray" onClick={() => excluirLancamento(l.id)}>Excluir</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
