@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import ConflitoVinculoDialog, { ConflitoInfo } from "./shared/ConflitoVinculoDialog";
 
 const API_BASE = "/api";
 const TAMANHO_MAXIMO = 15 * 1024 * 1024;
@@ -167,13 +166,7 @@ function CardNotaEdicao({
   );
 }
 
-export default function NotasFiscaisEmitidas({
-  refrescarTick,
-  onMudou,
-}: {
-  refrescarTick?: number;
-  onMudou?: () => void;
-} = {}) {
+export default function NotasFiscaisEmitidas() {
   const [lista, setLista] = useState<NotaFiscalItem[]>([]);
   const [financeiro, setFinanceiro] = useState<FinanceiroResumo[]>([]);
   const [busca, setBusca] = useState("");
@@ -190,8 +183,6 @@ export default function NotasFiscaisEmitidas({
   const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
   const [dataLote, setDataLote] = useState(hojeISO());
   const [marcandoLote, setMarcandoLote] = useState(false);
-  const [conflito, setConflito] = useState<(ConflitoInfo & { _origem: { item: NotaFiscalItem; financeiroId: string; isPendente: boolean } }) | null>(null);
-  const [vinculandoId, setVinculandoId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function carregar() {
@@ -224,15 +215,6 @@ export default function NotasFiscaisEmitidas({
   useEffect(() => {
     carregar();
   }, []);
-
-  // NotaFiscal.tsx renderiza este componente junto com sua própria lista de
-  // financeiro/vínculos, cada um buscando os dados de forma independente. Isso
-  // reflete aqui qualquer mudança feita do lado de fora (ex: vincular pela tela do
-  // Financeiro) sem precisar clicar em "Atualizar" manualmente.
-  useEffect(() => {
-    if (refrescarTick) carregar();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refrescarTick]);
 
   const clientesDisponiveis = useMemo(() => {
     const nomes = new Set<string>();
@@ -330,7 +312,6 @@ export default function NotasFiscaisEmitidas({
         const errosServidor = (data.erros || []).map((er: any) => `${er.arquivo}: ${er.erro}`);
         setMsg([...avisos, ...errosServidor].filter(Boolean).join(" "));
         await carregar();
-        onMudou?.();
       } else {
         setMsg("Erro ao enviar notas fiscais.");
       }
@@ -373,7 +354,6 @@ export default function NotasFiscaisEmitidas({
         setEditando(null);
       }
       await carregar();
-      onMudou?.();
     } catch (err) {
       setMsg(`Erro ao salvar: ${err}`);
     }
@@ -381,65 +361,22 @@ export default function NotasFiscaisEmitidas({
 
   async function vincular(item: NotaFiscalItem, financeiroId: string, isPendente: boolean) {
     try {
-      const res = await fetch(`${API_BASE}/vinculos`, {
+      const res = await fetch(`${API_BASE}/notas-fiscais/${item.id}/vincular`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lancamentoId: financeiroId, notaId: item.id, origem: "sugerido-confirmado" }),
+        body: JSON.stringify({ financeiroId }),
       });
-      if (res.status === 409) {
-        const corpo = await res.json();
-        const detalhe = corpo?.detail?.conflito;
-        if (detalhe) {
-          setConflito({ ...detalhe, _origem: { item, financeiroId, isPendente } });
-        } else {
-          setMsg("Financeiro e nota têm status incompatíveis.");
-        }
-        return;
-      }
       const data = await res.json();
       if (data.status !== "ok") {
-        setMsg(data.erro || "Erro ao vincular nota ao lançamento.");
+        setMsg("Erro ao vincular nota ao lançamento.");
         return;
       }
       if (isPendente) {
         setPendentes((prev) => prev.filter((p) => p.id !== item.id));
       }
-      setVinculandoId(null);
       await carregar();
-      onMudou?.();
     } catch (err) {
       setMsg(`Erro ao vincular: ${err}`);
-    }
-  }
-
-  async function resolverConflito(lado: "financeiro" | "nota") {
-    if (!conflito) return;
-    const { item, financeiroId, isPendente } = conflito._origem;
-    try {
-      const res = await fetch(`${API_BASE}/vinculos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          lancamentoId: financeiroId,
-          notaId: item.id,
-          origem: "sugerido-confirmado",
-          resolverConflito: lado,
-        }),
-      });
-      const data = await res.json();
-      if (data.status !== "ok") {
-        setMsg(data.erro || "Erro ao resolver o conflito.");
-        return;
-      }
-      if (isPendente) {
-        setPendentes((prev) => prev.filter((p) => p.id !== item.id));
-      }
-      setConflito(null);
-      setVinculandoId(null);
-      await carregar();
-      onMudou?.();
-    } catch (err) {
-      setMsg(`Erro ao resolver o conflito: ${err}`);
     }
   }
 
@@ -457,7 +394,6 @@ export default function NotasFiscaisEmitidas({
     setPendentes((prev) => prev.filter((p) => p.id !== item.id));
     if (editando?.id === item.id) setEditando(null);
     await carregar();
-    onMudou?.();
   }
 
   async function alternarCancelada(item: NotaFiscalItem) {
@@ -473,7 +409,6 @@ export default function NotasFiscaisEmitidas({
         return;
       }
       await carregar();
-      onMudou?.();
     } catch (err) {
       setMsg(`Erro ao atualizar o cancelamento: ${err}`);
     }
@@ -492,7 +427,6 @@ export default function NotasFiscaisEmitidas({
         return;
       }
       await carregar();
-      onMudou?.();
     } catch (err) {
       setMsg(`Erro ao atualizar recebimento: ${err}`);
     }
@@ -552,7 +486,6 @@ export default function NotasFiscaisEmitidas({
       );
       setSelecionados(new Set());
       await carregar();
-      onMudou?.();
     } catch (err) {
       setMsg(`Erro ao marcar em lote: ${err}`);
     } finally {
@@ -563,26 +496,6 @@ export default function NotasFiscaisEmitidas({
   function financeiroPorId(id?: string | null) {
     if (!id) return null;
     return financeiro.find((f) => f.id === id) || null;
-  }
-
-  const [candidatosVinculo, setCandidatosVinculo] = useState<FinanceiroResumo[]>([]);
-
-  async function abrirPickerVinculo(item: NotaFiscalItem) {
-    if (vinculandoId === item.id) {
-      setVinculandoId(null);
-      return;
-    }
-    setVinculandoId(item.id);
-    setCandidatosVinculo([]);
-    try {
-      const res = await fetch(`${API_BASE}/vinculos/sugestoes?tipo=nota&id=${item.id}`);
-      const data = await res.json();
-      if (data.status === "ok") {
-        setCandidatosVinculo(data.candidatosFinanceiro || []);
-      }
-    } catch {
-      // silencioso - o select cai pro fallback (lista completa de financeiro)
-    }
   }
 
   return (
@@ -622,8 +535,6 @@ export default function NotasFiscaisEmitidas({
         .nfe-badge-vencida { background: #fee2e2; color: #991b1b; }
         .nfe-lote-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 14px; padding: 10px 14px; }
         .nfe-lote-bar strong { color: #1e3a8a; }
-        .nfe-picker-vinculo { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
-        .nfe-picker-vinculo select { border: 1px solid #d1d5db; border-radius: 8px; padding: 8px; font-size: 12px; font-weight: 700; max-width: 320px; }
 
         @media (max-width: 900px) {
           .nfe-confirm-grid { grid-template-columns: 1fr 1fr; }
@@ -663,10 +574,6 @@ export default function NotasFiscaisEmitidas({
       </div>
 
       {msg && <div className="nfe-msg">{msg}</div>}
-
-      {conflito && (
-        <ConflitoVinculoDialog conflito={conflito} onResolver={resolverConflito} onFechar={() => setConflito(null)} />
-      )}
 
       {pendentes.map((item) => (
         <CardNotaEdicao
@@ -834,29 +741,8 @@ export default function NotasFiscaisEmitidas({
             <button className="nfe-btn" onClick={() => alternarCancelada(item)}>
               {item.cancelada ? "Desfazer cancelamento" : "Marcar como cancelada"}
             </button>
-            {!item.financeiroId && (
-              <button className="nfe-btn" onClick={() => abrirPickerVinculo(item)}>Vincular a existente</button>
-            )}
             <button className="nfe-btn nfe-btn-red" onClick={() => excluir(item)}>Excluir</button>
           </div>
-          {vinculandoId === item.id && (
-            <div className="nfe-picker-vinculo">
-              <select
-                defaultValue=""
-                onChange={(e) => {
-                  if (e.target.value) vincular(item, e.target.value, false);
-                }}
-              >
-                <option value="">Escolher lançamento do Financeiro...</option>
-                {(candidatosVinculo.length ? candidatosVinculo : financeiro).map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.cliente} — {brl(f.valor)} — {f.referencia || "-"}
-                  </option>
-                ))}
-              </select>
-              <button className="nfe-btn" onClick={() => setVinculandoId(null)}>Cancelar</button>
-            </div>
-          )}
         </td>
       </tr>
     );

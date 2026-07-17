@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from "react";
-import ConflitoVinculoDialog, { ConflitoInfo } from "./shared/ConflitoVinculoDialog";
 
 const API_BASE = "/api";
 const VERDE = "#00B050";
@@ -21,24 +20,6 @@ type Lancamento = {
   nota: string;
   mesReferencia: number | null;
   anoReferencia: number | null;
-};
-
-type HistoricoResumo = {
-  id: string;
-  cliente: string;
-  referencia: string;
-  valor: number;
-  mesReferencia: number | null;
-  anoReferencia: number | null;
-  criadoEm: string;
-  origem: string;
-};
-
-type VinculoItem = {
-  id: string;
-  lancamentoId: string | null;
-  notaId: string | null;
-  historicoId: string | null;
 };
 
 const NOMES_MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
@@ -110,15 +91,6 @@ export default function Financeiro() {
   const [mostrarNovo, setMostrarNovo] = useState(false);
   const [novo, setNovo] = useState<Lancamento>({ ...vazio, mesReferencia: agora.getMonth() + 1, anoReferencia: agora.getFullYear() });
 
-  // Área "Pendentes de vínculo": PDFs subidos no Histórico que ainda não viraram
-  // lançamento nem foram ligados a um existente (Tarefa B da V8).
-  const [historico, setHistorico] = useState<HistoricoResumo[]>([]);
-  const [vinculos, setVinculos] = useState<VinculoItem[]>([]);
-  const [historicoParaVincular, setHistoricoParaVincular] = useState("");
-  const [pickerVinculoId, setPickerVinculoId] = useState<string | null>(null);
-  const [candidatosPicker, setCandidatosPicker] = useState<{ id: string; cliente: string; valor: number; referencia: string }[]>([]);
-  const [conflitoVinculo, setConflitoVinculo] = useState<(ConflitoInfo & { _origem: { historicoId: string; lancamentoId: string } }) | null>(null);
-
   const [exportando, setExportando] = useState<{ titulo: string; texto: string } | null>(null);
   const [clienteExportar, setClienteExportar] = useState("");
 
@@ -148,25 +120,13 @@ export default function Financeiro() {
   async function carregar() {
     setCarregando(true);
     try {
-      const [resFin, resHist, resVinc] = await Promise.all([
-        fetch(`${API_BASE}/financeiro`),
-        fetch(`${API_BASE}/historico-pdfs`).catch(() => null),
-        fetch(`${API_BASE}/vinculos`).catch(() => null),
-      ]);
-      const data = await resFin.json();
+      const res = await fetch(`${API_BASE}/financeiro`);
+      const data = await res.json();
       if (data.status === "ok") {
         setLista(data.lancamentos || []);
         setErro("");
       } else {
         setErro("Erro ao carregar lançamentos.");
-      }
-      if (resHist) {
-        const dataHist = await resHist.json();
-        if (dataHist.status === "ok") setHistorico(dataHist.historico || []);
-      }
-      if (resVinc) {
-        const dataVinc = await resVinc.json();
-        if (dataVinc.status === "ok") setVinculos(dataVinc.vinculos || []);
       }
     } catch {
       setErro("Erro ao conectar com o servidor.");
@@ -181,11 +141,6 @@ export default function Financeiro() {
     const nomes = new Set(lista.map((l) => l.cliente).filter(Boolean));
     return Array.from(nomes).sort((a, b) => a.localeCompare(b, "pt-BR"));
   }, [lista]);
-
-  const pendentesHistorico = useMemo(() => {
-    const vinculadosIds = new Set(vinculos.map((v) => v.historicoId).filter(Boolean));
-    return historico.filter((h) => !vinculadosIds.has(h.id));
-  }, [historico, vinculos]);
 
   const itensDoMes = useMemo(() => {
     if (todosOsMeses) return lista;
@@ -254,11 +209,11 @@ export default function Financeiro() {
     return grupos;
   }, [todosOsMeses, itensDoMesFiltrados]);
 
-  async function salvar(l: Lancamento, historicoId?: string) {
+  async function salvar(l: Lancamento) {
     const res = await fetch(`${API_BASE}/financeiro`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(historicoId ? { ...l, historicoId } : l),
+      body: JSON.stringify(l),
     });
     const data = await res.json();
     if (data.status !== "ok") {
@@ -305,100 +260,13 @@ export default function Financeiro() {
       return;
     }
     const referencia = `${NOMES_MESES[novo.mesReferencia || mesSelecionado]} / ${novo.anoReferencia || anoSelecionado}`;
-    await salvar(
-      {
-        ...novo,
-        referencia,
-        dataEmissao: hoje(),
-      },
-      historicoParaVincular || undefined
-    );
-    setNovo({ ...vazio, mesReferencia: mesSelecionado, anoReferencia: anoSelecionado });
-    setHistoricoParaVincular("");
-    setMostrarNovo(false);
-  }
-
-  // "Pendentes de vínculo": pré-preenche o formulário de novo lançamento com os
-  // dados extraídos do PDF do Histórico; ao salvar, cria o lançamento E o vínculo
-  // com esse histórico numa única chamada (ver historicoParaVincular em salvar()).
-  function criarLancamentoDePendente(item: HistoricoResumo) {
-    setNovo({
-      ...vazio,
-      cliente: item.cliente,
-      valor: item.valor,
-      mesReferencia: item.mesReferencia || mesSelecionado,
-      anoReferencia: item.anoReferencia || anoSelecionado,
-      observacao: item.referencia || "",
+    await salvar({
+      ...novo,
+      referencia,
+      dataEmissao: hoje(),
     });
-    setHistoricoParaVincular(item.id);
-    setMostrarNovo(true);
-  }
-
-  async function abrirPickerHistorico(item: HistoricoResumo) {
-    if (pickerVinculoId === item.id) {
-      setPickerVinculoId(null);
-      return;
-    }
-    setPickerVinculoId(item.id);
-    setCandidatosPicker([]);
-    try {
-      const res = await fetch(`${API_BASE}/vinculos/sugestoes?tipo=historico&id=${item.id}`);
-      const data = await res.json();
-      if (data.status === "ok") setCandidatosPicker(data.candidatosFinanceiro || []);
-    } catch {
-      // silencioso - o select cai pro fallback (lista completa de lançamentos)
-    }
-  }
-
-  async function vincularHistorico(historicoId: string, lancamentoId: string) {
-    try {
-      const res = await fetch(`${API_BASE}/vinculos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ historicoId, lancamentoId, origem: "manual" }),
-      });
-      if (res.status === 409) {
-        const corpo = await res.json();
-        const detalhe = corpo?.detail?.conflito;
-        if (detalhe) {
-          setConflitoVinculo({ ...detalhe, _origem: { historicoId, lancamentoId } });
-        } else {
-          setErro("Financeiro e nota vinculada têm status incompatíveis.");
-        }
-        return;
-      }
-      const data = await res.json();
-      if (data.status !== "ok") {
-        setErro(data.erro || "Erro ao vincular.");
-        return;
-      }
-      setPickerVinculoId(null);
-      await carregar();
-    } catch (err) {
-      setErro(`Erro ao vincular: ${err}`);
-    }
-  }
-
-  async function resolverConflitoVinculo(lado: "financeiro" | "nota") {
-    if (!conflitoVinculo) return;
-    const { historicoId, lancamentoId } = conflitoVinculo._origem;
-    try {
-      const res = await fetch(`${API_BASE}/vinculos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ historicoId, lancamentoId, origem: "manual", resolverConflito: lado }),
-      });
-      const data = await res.json();
-      if (data.status !== "ok") {
-        setErro(data.erro || "Erro ao resolver o conflito.");
-        return;
-      }
-      setConflitoVinculo(null);
-      setPickerVinculoId(null);
-      await carregar();
-    } catch (err) {
-      setErro(`Erro ao resolver o conflito: ${err}`);
-    }
+    setNovo({ ...vazio, mesReferencia: mesSelecionado, anoReferencia: anoSelecionado });
+    setMostrarNovo(false);
   }
 
   function linhaResumo(l: Lancamento, comReferencia: boolean) {
@@ -773,21 +641,15 @@ export default function Financeiro() {
             {STATUS_LISTA.map((s) => <option key={s.valor} value={s.valor}>{s.label}</option>)}
           </select>
           <button className="btn" onClick={carregar}>{carregando ? "Atualizando..." : "Atualizar"}</button>
-          <button className="btn btn-green" onClick={() => { setMostrarNovo((v) => !v); setHistoricoParaVincular(""); }}>+ Novo lançamento</button>
+          <button className="btn btn-green" onClick={() => setMostrarNovo((v) => !v)}>+ Novo lançamento</button>
         </div>
       </div>
 
       {erro && <div className="box" style={{ color: "#b91c1c", fontWeight: 900 }}>{erro}</div>}
 
-      {conflitoVinculo && (
-        <ConflitoVinculoDialog conflito={conflitoVinculo} onResolver={resolverConflitoVinculo} onFechar={() => setConflitoVinculo(null)} />
-      )}
-
       {mostrarNovo && (
         <div className="box">
-          <h2 style={{ marginTop: 0 }}>
-            Novo lançamento{historicoParaVincular && " (vinculando ao PDF selecionado do Histórico)"}
-          </h2>
+          <h2 style={{ marginTop: 0 }}>Novo lançamento</h2>
           <div className="painel-novo">
             <div className="campo">
               <label>Cliente</label>
@@ -818,7 +680,7 @@ export default function Financeiro() {
           </div>
           <div className="actions" style={{ marginTop: 12 }}>
             <button className="btn btn-green" onClick={criarLancamento}>Adicionar</button>
-            <button className="btn" onClick={() => { setMostrarNovo(false); setHistoricoParaVincular(""); }}>Cancelar</button>
+            <button className="btn" onClick={() => setMostrarNovo(false)}>Cancelar</button>
           </div>
         </div>
       )}
@@ -831,55 +693,6 @@ export default function Financeiro() {
         <div className="card"><span>Recebido{todosOsMeses ? " (filtro atual)" : " no mês"}</span><strong>{brl(totaisMes.recebido)}</strong></div>
         <div className="card"><span>Pendente/em aberto{todosOsMeses ? " (filtro atual)" : " no mês"}</span><strong>{brl(totaisMes.pendente)}</strong></div>
       </div>
-
-      {pendentesHistorico.length > 0 && (
-        <div className="box">
-          <h2 style={{ marginTop: 0 }}>Pendentes de vínculo</h2>
-          <p style={{ marginTop: -8, marginBottom: 12, color: "#6b7280", fontWeight: 700, fontSize: 13 }}>
-            PDFs enviados no Histórico que ainda não viraram lançamento nem foram ligados a um existente.
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <th>Cliente</th>
-                <th>Referência</th>
-                <th>Valor</th>
-                <th>Ações</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pendentesHistorico.map((item) => (
-                <tr key={item.id}>
-                  <td data-label="Cliente">{item.cliente || "-"}</td>
-                  <td data-label="Referência">{item.referencia || "-"}</td>
-                  <td data-label="Valor">{brl(item.valor)}</td>
-                  <td data-label="Ações">
-                    <div className="actions">
-                      <button className="btn btn-green" onClick={() => criarLancamentoDePendente(item)}>Criar lançamento</button>
-                      <button className="btn" onClick={() => abrirPickerHistorico(item)}>Vincular a existente</button>
-                    </div>
-                    {pickerVinculoId === item.id && (
-                      <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                        <select
-                          className="mini-select"
-                          defaultValue=""
-                          onChange={(e) => { if (e.target.value) vincularHistorico(item.id, e.target.value); }}
-                        >
-                          <option value="">Escolher lançamento...</option>
-                          {(candidatosPicker.length ? candidatosPicker : lista).map((f) => (
-                            <option key={f.id} value={f.id}>{f.cliente} — {brl(f.valor)} — {f.referencia || "-"}</option>
-                          ))}
-                        </select>
-                        <button className="btn" onClick={() => setPickerVinculoId(null)}>Cancelar</button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
 
       <div className="box exportar-barra">
         <div className="exportar-linha">

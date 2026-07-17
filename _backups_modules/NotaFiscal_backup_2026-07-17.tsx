@@ -118,11 +118,6 @@ export default function NotaFiscal() {
   const [notasPainel, setNotasPainel] = useState<DocResumo[]>([]);
   const [historicoPdfs, setHistoricoPdfs] = useState<DocResumo[]>([]);
   const [vinculosFinanceiro, setVinculosFinanceiro] = useState<Record<string, VinculoInfo>>({});
-  // NotasFiscaisEmitidas é renderizado logo abaixo, na mesma página, mas busca seus
-  // próprios dados de forma independente - esse contador avisa o filho toda vez que
-  // este componente recarrega os dados (por mutação própria ou clique em Atualizar),
-  // pra manter os dois em sincronia sem precisar de um estado global.
-  const [tick, setTick] = useState(0);
 
   async function carregar() {
     try {
@@ -165,7 +160,6 @@ export default function NotaFiscal() {
     } catch {
       setErro("Não consegui carregar clientes/financeiro. Confira o backend.");
     }
-    setTick((t) => t + 1);
   }
 
   function notaVinculada(lancId: string) {
@@ -517,7 +511,7 @@ ${form.descricao}
         </table>
       </div>
 
-      <NotasFiscaisEmitidas refrescarTick={tick} onMudou={carregar} />
+      <NotasFiscaisEmitidas />
 
       <div className="box">
         <h2>Prévia do pacote para o portal</h2>

@@ -433,138 +433,75 @@ def parse_nfse_sp(texto: str):
 
     return dados
 
+def sugerir_financeiro(cliente: str, valor: float, mes, ano):
+    """Sugere um lançamento do financeiro que pode corresponder a uma nota fiscal recém-importada,
+    comparando cliente (substring nos dois sentidos) e valor (±R$0,01). Prioriza também bater mês/ano."""
+    if not cliente:
+        return None
+    conn = conectar_db()
+    candidatos = conn.execute("SELECT * FROM financeiro WHERE status != 'recebido'").fetchall()
+    conn.close()
+
+    cliente_norm = cliente.strip().lower()
+    melhor = None
+    for c in candidatos:
+        nome_cand = (c["cliente"] or "").strip().lower()
+        if not nome_cand:
+            continue
+        nome_ok = cliente_norm in nome_cand or nome_cand in cliente_norm
+        valor_ok = abs((c["valor"] or 0) - (valor or 0)) < 0.01
+        if nome_ok and valor_ok:
+            mes_ok = bool(mes) and bool(ano) and c["mes_referencia"] == mes and c["ano_referencia"] == ano
+            if mes_ok:
+                return c["id"]
+            melhor = melhor or c["id"]
+    return melhor
+
 def _cliente_bate(a, b) -> bool:
     a = (a or "").strip().lower()
     b = (b or "").strip().lower()
     return bool(a) and bool(b) and (a in b or b in a)
 
-def _buscar_candidatos(conn, tabela: str, coluna_vinculo: str, cliente: str, valor: float, mes, ano, excluir_id: Optional[str] = None):
-    """Generaliza o match usado nas sugestões de vínculo (cliente substring nos dois
-    sentidos + valor ±R$0,01, priorizando bater mês/ano) pra qualquer uma das 3 tabelas
-    (financeiro/notas_fiscais/historico_pdfs), excluindo quem já está vinculado naquela
-    coluna. Candidatos com mês/ano exatos vêm primeiro."""
-    if not cliente:
-        return []
-    ja_vinculados = {
-        r[0] for r in conn.execute(
-            f"SELECT {coluna_vinculo} FROM vinculos WHERE {coluna_vinculo} IS NOT NULL"
-        ).fetchall()
-    }
-    linhas = conn.execute(f"SELECT * FROM {tabela}").fetchall()
-    exatos, aproximados = [], []
-    for r in linhas:
-        if r["id"] == excluir_id or r["id"] in ja_vinculados:
+def _resolver_financeiro_para_nota(nota_row, financeiro_rows):
+    """Acha o lançamento do financeiro correspondente a uma nota fiscal (não cancelada):
+    1) vínculo explícito (nota.financeiro_id, criado via 'Vincular'); 2) senão cliente
+    (substring nos dois sentidos) + valor (±R$0,01) + mês/ano EXATOS. Mais rígida que
+    sugerir_financeiro (que só 'prefere' bater mês/ano): aqui o resultado alimenta direto
+    os totais do Dashboard, então chutar errado é pior que não achar."""
+    if nota_row["financeiro_id"]:
+        direto = next((f for f in financeiro_rows if f["id"] == nota_row["financeiro_id"]), None)
+        if direto:
+            return direto
+    if not nota_row["mes_referencia"] or not nota_row["ano_referencia"]:
+        return None
+    for f in financeiro_rows:
+        if not _cliente_bate(nota_row["cliente"], f["cliente"]):
             continue
-        if not _cliente_bate(cliente, r["cliente"]):
+        if abs((f["valor"] or 0) - (nota_row["valor"] or 0)) >= 0.01:
             continue
-        if abs((r["valor"] or 0) - (valor or 0)) >= 0.01:
+        if not f["mes_referencia"] or not f["ano_referencia"]:
             continue
-        r_mes = r["mes_referencia"] if "mes_referencia" in r.keys() else None
-        r_ano = r["ano_referencia"] if "ano_referencia" in r.keys() else None
-        mes_ok = bool(mes) and bool(ano) and r_mes == mes and r_ano == ano
-        (exatos if mes_ok else aproximados).append(r)
-    return exatos + aproximados
+        if f["mes_referencia"] != nota_row["mes_referencia"] or f["ano_referencia"] != nota_row["ano_referencia"]:
+            continue
+        return f
+    return None
 
-def sugerir_financeiro(cliente: str, valor: float, mes, ano):
-    """Sugere um lançamento do financeiro que pode corresponder a uma nota fiscal recém-importada."""
-    conn = conectar_db()
-    candidatos = _buscar_candidatos(conn, "financeiro", "lancamento_id", cliente, valor, mes, ano)
-    conn.close()
-    return candidatos[0]["id"] if candidatos else None
-
-def _classificar_financeiro(status: str) -> str:
-    if status == "recebido":
-        return "recebido"
-    if status == "nota_cancelada":
-        return "cancelado"
-    return "aberto"
-
-def _classificar_nota(cancelada, data_recebimento) -> str:
-    if cancelada:
-        return "cancelado"
+def _sincronizar_financeiro_com_nota(conn, financeiro_id: str, data_recebimento: str):
+    """Sincronização leve nota -> financeiro: ao marcar (ou desfazer) uma nota como
+    recebida, reflete no lançamento vinculado, se houver. Só desfaz o status do
+    lançamento se ele estiver 'recebido' (evita mexer em 'nota_cancelada' etc)."""
+    if not financeiro_id:
+        return
     if data_recebimento:
-        return "recebido"
-    return "aberto"
-
-def _aplicar_classe_no_financeiro(conn, financeiro_id: str, classe: str, data_referencia: str):
-    if classe == "recebido":
         conn.execute(
             "UPDATE financeiro SET status = 'recebido', data_recebimento = ? WHERE id = ?",
-            (data_referencia or datetime.now().strftime("%Y-%m-%d"), financeiro_id),
+            (data_recebimento, financeiro_id),
         )
-    elif classe == "cancelado":
-        conn.execute("UPDATE financeiro SET status = 'nota_cancelada' WHERE id = ?", (financeiro_id,))
     else:
-        # aberto: só desfaz se estava em recebido/nota_cancelada - preserva status
-        # intermediário (cobrado, negociacao etc.) que não tem equivalente na nota.
         conn.execute(
-            "UPDATE financeiro SET status = 'pendente', data_recebimento = '' "
-            "WHERE id = ? AND status IN ('recebido', 'nota_cancelada')",
+            "UPDATE financeiro SET status = 'pendente', data_recebimento = '' WHERE id = ? AND status = 'recebido'",
             (financeiro_id,),
         )
-
-def _aplicar_classe_na_nota(conn, nota_id: str, classe: str, data_referencia: str):
-    if classe == "recebido":
-        conn.execute(
-            "UPDATE notas_fiscais SET cancelada = 0, data_recebimento = ? WHERE id = ?",
-            (data_referencia or datetime.now().strftime("%Y-%m-%d"), nota_id),
-        )
-    elif classe == "cancelado":
-        conn.execute("UPDATE notas_fiscais SET cancelada = 1 WHERE id = ?", (nota_id,))
-    else:
-        conn.execute(
-            "UPDATE notas_fiscais SET cancelada = 0, data_recebimento = '' WHERE id = ?",
-            (nota_id,),
-        )
-
-def _propagar_status_vinculo(conn, vinculo_row, origem: str):
-    """origem: 'financeiro' | 'nota' - o lado que acabou de ser editado é sempre a fonte
-    da verdade; empurra a classe (recebido/cancelado/aberto) pro outro lado, na MESMA
-    transação (quem chama faz o commit). Nunca bloqueia a edição de origem - só roda
-    depois que ela já foi aplicada. Não faz nada se o vínculo não ligar os dois lados."""
-    if not vinculo_row["lancamento_id"] or not vinculo_row["nota_id"]:
-        return
-    financeiro = conn.execute("SELECT * FROM financeiro WHERE id = ?", (vinculo_row["lancamento_id"],)).fetchone()
-    nota = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (vinculo_row["nota_id"],)).fetchone()
-    if not financeiro or not nota:
-        return
-    if origem == "financeiro":
-        classe = _classificar_financeiro(financeiro["status"])
-        _aplicar_classe_na_nota(conn, nota["id"], classe, financeiro["data_recebimento"])
-    else:
-        classe = _classificar_nota(nota["cancelada"], nota["data_recebimento"])
-        _aplicar_classe_no_financeiro(conn, financeiro["id"], classe, nota["data_recebimento"])
-
-def _desvincular(conn, vinculo_row):
-    """Remove um vínculo e limpa os campos-espelho pra não ficarem stale - é isso que
-    conserta o bug da Essy: ao excluir a nota, o financeiro deixa de mostrar
-    nota_enviada=1/nota=<número antigo>/data_envio_nota=<data antiga> de um documento
-    que não existe mais."""
-    conn.execute("DELETE FROM vinculos WHERE id = ?", (vinculo_row["id"],))
-    if vinculo_row["nota_id"]:
-        conn.execute("UPDATE notas_fiscais SET financeiro_id = '' WHERE id = ?", (vinculo_row["nota_id"],))
-    if vinculo_row["lancamento_id"] and vinculo_row["nota_id"]:
-        conn.execute(
-            "UPDATE financeiro SET nota_enviada = 0, nota = '', data_envio_nota = '' WHERE id = ?",
-            (vinculo_row["lancamento_id"],),
-        )
-
-def _cascade_excluir_vinculos_de(conn, lancamento_id: Optional[str] = None, nota_id: Optional[str] = None, historico_id: Optional[str] = None):
-    condicoes, params = [], []
-    if lancamento_id:
-        condicoes.append("lancamento_id = ?")
-        params.append(lancamento_id)
-    if nota_id:
-        condicoes.append("nota_id = ?")
-        params.append(nota_id)
-    if historico_id:
-        condicoes.append("historico_id = ?")
-        params.append(historico_id)
-    if not condicoes:
-        return
-    rows = conn.execute(f"SELECT * FROM vinculos WHERE {' OR '.join(condicoes)}", params).fetchall()
-    for row in rows:
-        _desvincular(conn, row)
 
 def montar_dashboard_financeiro():
     """Monta os dados que alimentam o Dashboard (aba Principal). A partir da v87, o
@@ -577,18 +514,19 @@ def montar_dashboard_financeiro():
     conn = conectar_db()
     notas = conn.execute("SELECT * FROM notas_fiscais WHERE COALESCE(cancelada, 0) = 0").fetchall()
     financeiro_rows = conn.execute("SELECT * FROM financeiro").fetchall()
-    vinculos_rows = conn.execute("SELECT * FROM vinculos").fetchall()
+    historico_rows = conn.execute("SELECT * FROM historico_pdfs").fetchall()
     conn.close()
 
     financeiro_usados = set()
     notas_enriquecidas = []
     for n in notas:
         item = row_nota_fiscal(n)
-        vinculo = next((v for v in vinculos_rows if v["nota_id"] == n["id"]), None)
-        financeiro_id_resolvido = vinculo["lancamento_id"] if vinculo else None
-        if financeiro_id_resolvido:
-            financeiro_usados.add(financeiro_id_resolvido)
-        item["financeiroIdResolvido"] = financeiro_id_resolvido
+        f = _resolver_financeiro_para_nota(n, financeiro_rows)
+        if f:
+            financeiro_usados.add(f["id"])
+            item["financeiroIdResolvido"] = f["id"]
+        else:
+            item["financeiroIdResolvido"] = None
         notas_enriquecidas.append(item)
 
     sem_nota_emitida = [
@@ -597,14 +535,25 @@ def montar_dashboard_financeiro():
     ]
 
     vinculos_financeiro = {}
-    for v in vinculos_rows:
-        if not v["lancamento_id"]:
+    for item in notas_enriquecidas:
+        if item["financeiroIdResolvido"]:
+            vinculos_financeiro.setdefault(item["financeiroIdResolvido"], {})["notaId"] = item["id"]
+    for f in financeiro_rows:
+        if not f["mes_referencia"] or not f["ano_referencia"]:
             continue
-        entrada = vinculos_financeiro.setdefault(v["lancamento_id"], {})
-        if v["nota_id"]:
-            entrada["notaId"] = v["nota_id"]
-        if v["historico_id"]:
-            entrada["historicoPdfId"] = v["historico_id"]
+        for h in historico_rows:
+            if not _cliente_bate(f["cliente"], h["cliente"]):
+                continue
+            if abs((h["valor"] or 0) - (f["valor"] or 0)) >= 0.01:
+                continue
+            h_mes = h["mes_referencia"] if "mes_referencia" in h.keys() else None
+            h_ano = h["ano_referencia"] if "ano_referencia" in h.keys() else None
+            if not h_mes or not h_ano:
+                continue
+            if h_mes != f["mes_referencia"] or h_ano != f["ano_referencia"]:
+                continue
+            vinculos_financeiro.setdefault(f["id"], {})["historicoPdfId"] = h["id"]
+            break
 
     return notas_enriquecidas, sem_nota_emitida, vinculos_financeiro
 
@@ -674,27 +623,6 @@ def init_db():
             financeiro_id TEXT DEFAULT ''
         )
     """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS vinculos (
-            id TEXT PRIMARY KEY,
-            lancamento_id TEXT,
-            nota_id TEXT,
-            historico_id TEXT,
-            criado_em TEXT NOT NULL,
-            atualizado_em TEXT NOT NULL,
-            origem TEXT NOT NULL DEFAULT 'manual'
-        )
-    """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_vinculos_lancamento ON vinculos(lancamento_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_vinculos_nota ON vinculos(nota_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_vinculos_historico ON vinculos(historico_id)")
-    # Um objeto não pode estar em dois vínculos ao mesmo tempo - garantido no banco via
-    # índice único parcial (só considera linhas onde a coluna não é NULL); a checagem em
-    # Python (ver _criar_vinculo_core) existe pra devolver uma mensagem amigável antes
-    # de bater nesse índice.
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_vinculos_lancamento ON vinculos(lancamento_id) WHERE lancamento_id IS NOT NULL")
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_vinculos_nota ON vinculos(nota_id) WHERE nota_id IS NOT NULL")
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_vinculos_historico ON vinculos(historico_id) WHERE historico_id IS NOT NULL")
 
     # ===== MIGRAÇÃO: novas colunas do financeiro (Agenda de Cobrança completa) =====
     colunas_existentes = {row["name"] for row in cur.execute("PRAGMA table_info(financeiro)").fetchall()}
@@ -762,40 +690,6 @@ def init_db():
             (mes, ano, row["id"]),
         )
     conn.commit()
-
-    # ===== MIGRAÇÃO: backfill de vinculos a partir do link legado
-    # notas_fiscais.financeiro_id (criado pelo antigo POST /notas-fiscais/{id}/vincular).
-    # Roda em todo startup mas é idempotente (não insere duplicado). Usa uuid.uuid4()
-    # diretamente em vez de gerar_id(), pois gerar_id() só é definida DEPOIS da chamada
-    # a init_db() logo abaixo, e chamá-la aqui geraria NameError.
-    ja_vinculadas = {
-        row["nota_id"] for row in cur.execute(
-            "SELECT nota_id FROM vinculos WHERE nota_id IS NOT NULL"
-        ).fetchall()
-    }
-    notas_com_link_legado = cur.execute(
-        "SELECT id, financeiro_id FROM notas_fiscais WHERE COALESCE(financeiro_id, '') != ''"
-    ).fetchall()
-    for nota_row in notas_com_link_legado:
-        if nota_row["id"] in ja_vinculadas:
-            continue
-        financeiro_existe = cur.execute(
-            "SELECT 1 FROM financeiro WHERE id = ?", (nota_row["financeiro_id"],)
-        ).fetchone()
-        if not financeiro_existe:
-            continue  # ponteiro órfão pré-existente - não cria vínculo pra um financeiro que não existe mais
-        lancamento_ja_vinculado = cur.execute(
-            "SELECT 1 FROM vinculos WHERE lancamento_id = ?", (nota_row["financeiro_id"],)
-        ).fetchone()
-        if lancamento_ja_vinculado:
-            continue  # anomalia pré-existente (2 notas apontando pro mesmo financeiro_id) - deixa pra reconciliação manual via UI
-        agora = datetime.now().isoformat()
-        cur.execute(
-            "INSERT INTO vinculos (id, lancamento_id, nota_id, historico_id, criado_em, atualizado_em, origem) "
-            "VALUES (?, ?, ?, NULL, ?, ?, 'manual')",
-            (str(uuid.uuid4()), nota_row["financeiro_id"], nota_row["id"], agora, agora),
-        )
-    conn.commit()
     conn.close()
 
 init_db()
@@ -817,8 +711,6 @@ class FinanceiroPayload(BaseModel):
     nota: str = ""
     mesReferencia: Optional[int] = None
     anoReferencia: Optional[int] = None
-    historicoId: Optional[str] = None  # opcional: quando informado, também cria/atualiza
-                                        # um vínculo com esse registro do histórico de PDFs
 
 class HistoricoPdfPayload(BaseModel):
     id: Optional[str] = None
@@ -854,13 +746,6 @@ class MarcarRecebidasPayload(BaseModel):
 
 class VincularFinanceiroPayload(BaseModel):
     financeiroId: str
-
-class VinculoCreatePayload(BaseModel):
-    lancamentoId: Optional[str] = None
-    notaId: Optional[str] = None
-    historicoId: Optional[str] = None
-    origem: str = "manual"
-    resolverConflito: Optional[str] = None  # "financeiro" | "nota" - só no reenvio após um 409
 
 class EquipePayload(BaseModel):
     id: Optional[str] = None
@@ -937,17 +822,6 @@ def row_nota_fiscal(row):
         "dataRecebimento": (row["data_recebimento"] if "data_recebimento" in chaves else "") or "",
     }
 
-def row_vinculo(row):
-    return {
-        "id": row["id"],
-        "lancamentoId": row["lancamento_id"],
-        "notaId": row["nota_id"],
-        "historicoId": row["historico_id"],
-        "criadoEm": row["criado_em"],
-        "atualizadoEm": row["atualizado_em"],
-        "origem": row["origem"],
-    }
-
 def row_equipe(row):
     return {
         "id": row["id"],
@@ -1017,193 +891,6 @@ def dashboard_financeiro_notas():
     notas, sem_nota_emitida, vinculos_financeiro = montar_dashboard_financeiro()
     return {"status": "ok", "notas": notas, "semNotaEmitida": sem_nota_emitida, "vinculosFinanceiro": vinculos_financeiro}
 
-@app.get("/vinculos")
-def listar_vinculos(cliente: Optional[str] = None, mes: Optional[int] = None, ano: Optional[int] = None):
-    conn = conectar_db()
-    rows = conn.execute("SELECT * FROM vinculos ORDER BY atualizado_em DESC").fetchall()
-    financeiro_map = {r["id"]: r for r in conn.execute("SELECT * FROM financeiro").fetchall()}
-    nota_map = {r["id"]: r for r in conn.execute("SELECT * FROM notas_fiscais").fetchall()}
-    historico_map = {r["id"]: r for r in conn.execute("SELECT * FROM historico_pdfs").fetchall()}
-    conn.close()
-
-    itens = []
-    for v in rows:
-        lanc = financeiro_map.get(v["lancamento_id"]) if v["lancamento_id"] else None
-        nota = nota_map.get(v["nota_id"]) if v["nota_id"] else None
-        hist = historico_map.get(v["historico_id"]) if v["historico_id"] else None
-        item = row_vinculo(v)
-        item["lancamento"] = row_financeiro(lanc) if lanc else None
-        item["nota"] = row_nota_fiscal(nota) if nota else None
-        item["historico"] = row_historico_resumo(hist) if hist else None
-        itens.append(item)
-
-    if cliente:
-        c = cliente.strip().lower()
-        itens = [
-            it for it in itens
-            if any(c in (obj["cliente"] or "").lower() for obj in (it["lancamento"], it["nota"], it["historico"]) if obj)
-        ]
-    if mes and ano:
-        itens = [
-            it for it in itens
-            if any(
-                obj.get("mesReferencia") == mes and obj.get("anoReferencia") == ano
-                for obj in (it["lancamento"], it["nota"], it["historico"]) if obj
-            )
-        ]
-
-    return {"status": "ok", "vinculos": itens}
-
-_TABELA_POR_TIPO = {
-    "financeiro": ("financeiro", "lancamento_id", row_financeiro),
-    "nota": ("notas_fiscais", "nota_id", row_nota_fiscal),
-    "historico": ("historico_pdfs", "historico_id", row_historico_resumo),
-}
-
-@app.get("/vinculos/sugestoes")
-def sugestoes_vinculos(tipo: str, id: str):
-    if tipo not in _TABELA_POR_TIPO:
-        return {"status": "erro", "erro": "tipo inválido (use financeiro, nota ou historico)"}
-    tabela_origem, _, _ = _TABELA_POR_TIPO[tipo]
-    conn = conectar_db()
-    origem = conn.execute(f"SELECT * FROM {tabela_origem} WHERE id = ?", (id,)).fetchone()
-    if not origem:
-        conn.close()
-        return {"status": "erro", "erro": "Registro não encontrado"}
-
-    resultado = {"status": "ok"}
-    for chave, (tabela_alvo, coluna_alvo, row_fn) in _TABELA_POR_TIPO.items():
-        if tabela_alvo == tabela_origem:
-            continue
-        candidatos = _buscar_candidatos(
-            conn, tabela_alvo, coluna_alvo,
-            origem["cliente"], origem["valor"], origem["mes_referencia"], origem["ano_referencia"],
-        )
-        resultado[f"candidatos{chave.capitalize()}"] = [row_fn(c) for c in candidatos[:10]]
-    conn.close()
-    return resultado
-
-def _criar_vinculo_core(payload: VinculoCreatePayload) -> dict:
-    ids_informados = [x for x in (payload.lancamentoId, payload.notaId, payload.historicoId) if x]
-    if len(ids_informados) < 2:
-        return {"status": "erro", "erro": "Informe ao menos dois registros para vincular."}
-
-    conn = conectar_db()
-    lanc = conn.execute("SELECT * FROM financeiro WHERE id=?", (payload.lancamentoId,)).fetchone() if payload.lancamentoId else None
-    nota = conn.execute("SELECT * FROM notas_fiscais WHERE id=?", (payload.notaId,)).fetchone() if payload.notaId else None
-    hist = conn.execute("SELECT * FROM historico_pdfs WHERE id=?", (payload.historicoId,)).fetchone() if payload.historicoId else None
-    if payload.lancamentoId and not lanc:
-        conn.close()
-        return {"status": "erro", "erro": "Lançamento não encontrado"}
-    if payload.notaId and not nota:
-        conn.close()
-        return {"status": "erro", "erro": "Nota fiscal não encontrada"}
-    if payload.historicoId and not hist:
-        conn.close()
-        return {"status": "erro", "erro": "Registro do histórico não encontrado"}
-
-    vinculos_por_campo = {}
-    for campo, valor_id in (("lancamento_id", payload.lancamentoId), ("nota_id", payload.notaId), ("historico_id", payload.historicoId)):
-        if not valor_id:
-            continue
-        v = conn.execute(f"SELECT * FROM vinculos WHERE {campo} = ?", (valor_id,)).fetchone()
-        if v:
-            vinculos_por_campo[campo] = v
-
-    ids_de_vinculos_encontrados = {v["id"] for v in vinculos_por_campo.values()}
-    if len(ids_de_vinculos_encontrados) > 1:
-        conn.close()
-        return {"status": "erro", "erro": "Os registros informados já pertencem a vínculos diferentes. Desvincule antes de criar um novo vínculo."}
-
-    vinculo_alvo = next(iter(vinculos_por_campo.values()), None)
-    if vinculo_alvo:
-        # Não deixa trocar silenciosamente um lado já preenchido desse vínculo por um
-        # id diferente (ex: nota já vinculada tentando ser trocada por outra nota).
-        for campo, valor_novo in (("lancamento_id", payload.lancamentoId), ("nota_id", payload.notaId), ("historico_id", payload.historicoId)):
-            valor_existente = vinculo_alvo[campo]
-            if valor_novo and valor_existente and valor_existente != valor_novo:
-                conn.close()
-                return {"status": "erro", "erro": "Um dos lados já está vinculado a outro registro. Desvincule antes de criar um novo vínculo."}
-
-    lancamento_id_final = payload.lancamentoId or (vinculo_alvo["lancamento_id"] if vinculo_alvo else None)
-    nota_id_final = payload.notaId or (vinculo_alvo["nota_id"] if vinculo_alvo else None)
-    historico_id_final = payload.historicoId or (vinculo_alvo["historico_id"] if vinculo_alvo else None)
-    lanc_final = lanc or (conn.execute("SELECT * FROM financeiro WHERE id=?", (lancamento_id_final,)).fetchone() if lancamento_id_final else None)
-    nota_final = nota or (conn.execute("SELECT * FROM notas_fiscais WHERE id=?", (nota_id_final,)).fetchone() if nota_id_final else None)
-
-    classe_escolhida = None
-    if lanc_final and nota_final:
-        classe_f = _classificar_financeiro(lanc_final["status"])
-        classe_n = _classificar_nota(nota_final["cancelada"], nota_final["data_recebimento"])
-        if classe_f != "aberto" and classe_n != "aberto" and classe_f != classe_n:
-            if not payload.resolverConflito:
-                conn.close()
-                raise HTTPException(status_code=409, detail={
-                    "status": "conflito",
-                    "erro": "Financeiro e nota fiscal têm status incompatíveis.",
-                    "conflito": {
-                        "lancamentoId": lanc_final["id"],
-                        "notaId": nota_final["id"],
-                        "financeiro": {"status": lanc_final["status"], "dataRecebimento": lanc_final["data_recebimento"] or ""},
-                        "nota": {"cancelada": bool(nota_final["cancelada"]), "dataRecebimento": nota_final["data_recebimento"] or ""},
-                    },
-                })
-            classe_escolhida = classe_f if payload.resolverConflito == "financeiro" else classe_n
-        elif classe_f != "aberto":
-            classe_escolhida = classe_f
-        elif classe_n != "aberto":
-            classe_escolhida = classe_n
-
-    agora = datetime.now().isoformat()
-    if vinculo_alvo:
-        conn.execute(
-            "UPDATE vinculos SET lancamento_id=?, nota_id=?, historico_id=?, atualizado_em=? WHERE id=?",
-            (lancamento_id_final, nota_id_final, historico_id_final, agora, vinculo_alvo["id"]),
-        )
-        vinculo_id = vinculo_alvo["id"]
-    else:
-        vinculo_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO vinculos (id, lancamento_id, nota_id, historico_id, criado_em, atualizado_em, origem) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (vinculo_id, lancamento_id_final, nota_id_final, historico_id_final, agora, agora, payload.origem),
-        )
-
-    if lancamento_id_final and nota_id_final:
-        if classe_escolhida:
-            if payload.resolverConflito == "nota":
-                data_ref = nota_final["data_recebimento"] or lanc_final["data_recebimento"]
-            else:
-                data_ref = lanc_final["data_recebimento"] or nota_final["data_recebimento"]
-            _aplicar_classe_no_financeiro(conn, lancamento_id_final, classe_escolhida, data_ref)
-            _aplicar_classe_na_nota(conn, nota_id_final, classe_escolhida, data_ref)
-        conn.execute(
-            "UPDATE financeiro SET nota_enviada = 1, nota = ?, data_envio_nota = ? WHERE id = ?",
-            (nota_final["numero_nota"], nota_final["data_emissao"] or datetime.now().strftime("%Y-%m-%d"), lancamento_id_final),
-        )
-        conn.execute("UPDATE notas_fiscais SET financeiro_id = ? WHERE id = ?", (lancamento_id_final, nota_id_final))
-
-    conn.commit()
-    row = conn.execute("SELECT * FROM vinculos WHERE id = ?", (vinculo_id,)).fetchone()
-    conn.close()
-    return {"status": "ok", "vinculo": row_vinculo(row)}
-
-@app.post("/vinculos")
-def criar_vinculo(payload: VinculoCreatePayload):
-    return _criar_vinculo_core(payload)
-
-@app.delete("/vinculos/{vinculo_id}")
-def excluir_vinculo(vinculo_id: str):
-    """Desvincula (nunca apaga financeiro/nota/histórico, só o elo entre eles)."""
-    conn = conectar_db()
-    row = conn.execute("SELECT * FROM vinculos WHERE id = ?", (vinculo_id,)).fetchone()
-    if not row:
-        conn.close()
-        return {"status": "erro", "erro": "Vínculo não encontrado"}
-    _desvincular(conn, row)
-    conn.commit()
-    conn.close()
-    return {"status": "ok", "id": vinculo_id}
-
 @app.post("/financeiro")
 def salvar_financeiro(payload: FinanceiroPayload):
     item_id = payload.id or gerar_id()
@@ -1228,26 +915,16 @@ def salvar_financeiro(payload: FinanceiroPayload):
             mes_ref, ano_ref,
         ),
     )
-    # Propagação bidirecional de status: se este lançamento estiver vinculado a uma nota
-    # fiscal, reflete a mudança de status nela também (mesma transação).
-    vinculo = conn.execute("SELECT * FROM vinculos WHERE lancamento_id = ?", (item_id,)).fetchone()
-    if vinculo:
-        _propagar_status_vinculo(conn, vinculo, origem="financeiro")
-
-    # Tarefa "Pendentes de vínculo": se um historicoId foi informado e nem ele nem este
-    # lançamento já estiverem vinculados, cria o vínculo lançamento+histórico agora.
-    if payload.historicoId:
-        ja_vinculado_hist = conn.execute("SELECT 1 FROM vinculos WHERE historico_id = ?", (payload.historicoId,)).fetchone()
-        ja_vinculado_lanc = conn.execute("SELECT 1 FROM vinculos WHERE lancamento_id = ?", (item_id,)).fetchone()
-        if not ja_vinculado_hist and not ja_vinculado_lanc:
-            agora = datetime.now().isoformat()
-            conn.execute(
-                "INSERT INTO vinculos (id, lancamento_id, nota_id, historico_id, criado_em, atualizado_em, origem) "
-                "VALUES (?, ?, NULL, ?, ?, ?, 'importado-historico')",
-                (str(uuid.uuid4()), item_id, payload.historicoId, agora, agora),
-            )
-
-    conn.commit()
+    # Sincronização leve financeiro -> nota: ao marcar o lançamento como recebido,
+    # se houver nota fiscal vinculada e ela ainda não tiver data de recebimento,
+    # usa a mesma data. Só nesse sentido (marcar) - desfazer fica só na nota.
+    if payload.status == "recebido":
+        conn.execute(
+            "UPDATE notas_fiscais SET data_recebimento = ? "
+            "WHERE financeiro_id = ? AND COALESCE(cancelada, 0) = 0 AND COALESCE(data_recebimento, '') = ''",
+            (payload.dataRecebimento or datetime.now().strftime("%Y-%m-%d"), item_id),
+        )
+        conn.commit()
 
     row = conn.execute("SELECT * FROM financeiro WHERE id = ?", (item_id,)).fetchone()
     conn.close()
@@ -1256,7 +933,6 @@ def salvar_financeiro(payload: FinanceiroPayload):
 @app.delete("/financeiro/{item_id}")
 def excluir_financeiro(item_id: str):
     conn = conectar_db()
-    _cascade_excluir_vinculos_de(conn, lancamento_id=item_id)
     conn.execute("DELETE FROM financeiro WHERE id = ?", (item_id,))
     conn.commit()
     conn.close()
@@ -1408,7 +1084,6 @@ def excluir_historico_pdf(item_id: str):
         caminho = UPLOAD_RELATORIOS_DIR / row["arquivo_nome"]
         if caminho.exists():
             caminho.unlink()
-    _cascade_excluir_vinculos_de(conn, historico_id=item_id)
     conn.execute("DELETE FROM historico_pdfs WHERE id = ?", (item_id,))
     conn.commit()
     conn.close()
@@ -1500,9 +1175,7 @@ def marcar_notas_recebidas(payload: MarcarRecebidasPayload):
             "UPDATE notas_fiscais SET data_recebimento = ? WHERE id = ?",
             (payload.dataRecebimento, item_id),
         )
-        vinculo = conn.execute("SELECT * FROM vinculos WHERE nota_id = ?", (item_id,)).fetchone()
-        if vinculo:
-            _propagar_status_vinculo(conn, vinculo, origem="nota")
+        _sincronizar_financeiro_com_nota(conn, row["financeiro_id"] or "", payload.dataRecebimento)
         atualizadas.append(item_id)
     conn.commit()
     conn.close()
@@ -1537,12 +1210,10 @@ def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload):
     if campos:
         valores.append(item_id)
         conn.execute(f"UPDATE notas_fiscais SET {', '.join(campos)} WHERE id = ?", valores)
-        # dataRecebimento ou cancelada explícitos -> reflete no lançamento vinculado, se
-        # houver (propagação bidirecional de status via a tabela vinculos).
-        if dados.get("dataRecebimento") is not None or dados.get("cancelada") is not None:
-            vinculo = conn.execute("SELECT * FROM vinculos WHERE nota_id = ?", (item_id,)).fetchone()
-            if vinculo:
-                _propagar_status_vinculo(conn, vinculo, origem="nota")
+        # dataRecebimento explícito ("" = desfazer, "AAAA-MM-DD" = marcar) -> reflete
+        # no lançamento vinculado, se houver (sincronização leve nota -> financeiro).
+        if dados.get("dataRecebimento") is not None:
+            _sincronizar_financeiro_com_nota(conn, row["financeiro_id"] or "", dados["dataRecebimento"])
         conn.commit()
 
     row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
@@ -1578,7 +1249,6 @@ def excluir_nota_fiscal(item_id: str):
         caminho = UPLOAD_NOTAS_DIR / row["arquivo_nome"]
         if caminho.exists():
             caminho.unlink()
-    _cascade_excluir_vinculos_de(conn, nota_id=item_id)
     conn.execute("DELETE FROM notas_fiscais WHERE id = ?", (item_id,))
     conn.commit()
     conn.close()
@@ -1586,22 +1256,24 @@ def excluir_nota_fiscal(item_id: str):
 
 @app.post("/notas-fiscais/{item_id}/vincular")
 def vincular_nota_financeiro(item_id: str, payload: VincularFinanceiroPayload):
-    """Mantido como wrapper fino sobre a lógica de /vinculos (usado pelo banner de
-    sugestão automática do upload de notas) - preserva o formato de resposta antigo
-    ({lancamento, item}) pra não quebrar o frontend existente. Um 409 de conflito
-    propaga normalmente (o chamador HTTP recebe o mesmo status code)."""
-    resultado = _criar_vinculo_core(
-        VinculoCreatePayload(lancamentoId=payload.financeiroId, notaId=item_id, origem="sugerido-confirmado")
-    )
-    if resultado.get("status") != "ok":
-        return resultado
-
     conn = conectar_db()
+    nota = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
+    lanc = conn.execute("SELECT * FROM financeiro WHERE id = ?", (payload.financeiroId,)).fetchone()
+    if not nota or not lanc:
+        conn.close()
+        return {"status": "erro", "erro": "Nota ou lançamento não encontrado"}
+
+    data_envio = nota["data_emissao"] or datetime.now().strftime("%Y-%m-%d")
+    conn.execute(
+        "UPDATE financeiro SET nota_enviada = 1, nota = ?, data_envio_nota = ? WHERE id = ?",
+        (nota["numero_nota"], data_envio, payload.financeiroId),
+    )
+    conn.execute("UPDATE notas_fiscais SET financeiro_id = ? WHERE id = ?", (payload.financeiroId, item_id))
+    conn.commit()
+
     lanc_atualizado = conn.execute("SELECT * FROM financeiro WHERE id = ?", (payload.financeiroId,)).fetchone()
     nota_atualizada = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
     conn.close()
-    if not lanc_atualizado or not nota_atualizada:
-        return {"status": "erro", "erro": "Nota ou lançamento não encontrado"}
     return {"status": "ok", "lancamento": row_financeiro(lanc_atualizado), "item": row_nota_fiscal(nota_atualizada)}
 
 @app.get("/equipe")
