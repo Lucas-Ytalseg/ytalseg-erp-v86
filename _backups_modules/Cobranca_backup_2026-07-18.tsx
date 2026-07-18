@@ -121,32 +121,6 @@ function soDigitos(s: string) {
   return (s || "").replace(/\D/g, "");
 }
 
-// V11: copiar texto pra área de transferência (com fallback pra navegadores sem Clipboard API)
-async function copiarTexto(texto: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(texto);
-      return true;
-    }
-  } catch {
-    // cai para o fallback abaixo
-  }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = texto;
-    ta.style.position = "fixed";
-    ta.style.left = "-9999px";
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
-}
-
 export default function Cobranca() {
   const [notas, setNotas] = useState<NotaFiscalItem[]>([]);
   const [vinculos, setVinculos] = useState<VinculoItem[]>([]);
@@ -161,30 +135,21 @@ export default function Cobranca() {
   const [desfecho, setDesfecho] = useState("cobrado");
   const [dataPrometida, setDataPrometida] = useState("");
 
-  // V11: copiar mensagem/copiar tudo + seção "Pendentes de nota" (aditivo, não mexe no que já existia acima)
-  const [copiadoId, setCopiadoId] = useState<string | null>(null);
-  const [aba, setAba] = useState<"cobranca" | "pendentes">("cobranca");
-  const [semNota, setSemNota] = useState<Lancamento[]>([]);
-  const [buscaPendentes, setBuscaPendentes] = useState("");
-
   async function carregar() {
     setCarregando(true);
     setErro("");
     try {
-      const [resNotas, resVinculos, resEmpresas, resSemNota] = await Promise.all([
+      const [resNotas, resVinculos, resEmpresas] = await Promise.all([
         fetch(`${API_BASE}/notas-fiscais`),
         fetch(`${API_BASE}/vinculos`),
         fetch(`${API_BASE}/empresas`),
-        fetch(`${API_BASE}/dashboard/financeiro-notas`),
       ]);
       const dNotas = await resNotas.json();
       const dVinculos = await resVinculos.json();
       const dEmpresas = await resEmpresas.json();
-      const dSemNota = await resSemNota.json();
       if (dNotas.status === "ok") setNotas(dNotas.notas || []);
       if (dVinculos.status === "ok") setVinculos(dVinculos.vinculos || []);
       if (dEmpresas.status === "ok") setEmpresas(dEmpresas.empresas || []);
-      if (dSemNota.status === "ok") setSemNota(dSemNota.semNotaEmitida || []);
     } catch {
       setErro("Não consegui conectar no backend.");
     }
@@ -238,34 +203,6 @@ export default function Cobranca() {
     return Array.from(mapa.values()).sort((a, b) => a.diasMaisUrgente - b.diasMaisUrgente);
   }, [filtradas, janela]);
 
-  // V11: lançamentos do Financeiro sem nota emitida/vinculada (mesmo critério do cartão
-  // "Sem nota emitida" do Dashboard, calculado 100% no backend em montar_dashboard_financeiro()).
-  // Ordenado do mais antigo pro mais recente = mais urgente de validar primeiro.
-  const semNotaFiltrada = useMemo(() => {
-    const base = !buscaPendentes.trim()
-      ? semNota
-      : semNota.filter((l) => (l.cliente || "").toLowerCase().includes(buscaPendentes.trim().toLowerCase()));
-    return [...base].sort((a, b) => (a.dataEmissao || "").localeCompare(b.dataEmissao || ""));
-  }, [semNota, buscaPendentes]);
-
-  function refTextoLancamento(l: Lancamento): string {
-    if (l.mesReferencia && l.anoReferencia) return `${NOMES_MESES[l.mesReferencia]} / ${l.anoReferencia}`;
-    return l.referencia || "-";
-  }
-
-  function montarTextoPendente(l: Lancamento): string {
-    return `*Validação de nota pendente* — Cliente ${l.cliente}, ref ${refTextoLancamento(l)}, valor ${brl(l.valor)}. Falta emitir/validar a nota. — YTALSEG`;
-  }
-
-  function montarTextoConsolidadoPendentes(lista: Lancamento[]): string {
-    const linhas = lista.map(
-      (l) => `• ${l.cliente} — ref ${refTextoLancamento(l)}, ${brl(l.valor)}, emitido em ${curta(l.dataEmissao)}`
-    );
-    return `*Notas pendentes de emissão/validação — YTALSEG (${curta(hojeISO())})*\n\n${linhas.join("\n")}\n\nTotal: ${brl(
-      lista.reduce((s, l) => s + (l.valor || 0), 0)
-    )}`;
-  }
-
   function montarTextoWhatsapp(cliente: string, notasCliente: NotaFiscalItem[]) {
     const total = notasCliente.reduce((s, n) => s + (n.valor || 0), 0);
     const linhas = notasCliente
@@ -282,37 +219,12 @@ export default function Cobranca() {
     );
   }
 
-  function abrirWhatsappTexto(cliente: string, texto: string, telefone: string) {
-    setWhatsapp({ cliente, texto, telefone });
-  }
-
   function abrirWhatsappCliente(g: Grupo) {
-    abrirWhatsappTexto(g.cliente, montarTextoWhatsapp(g.cliente, g.notas), telefoneDoCliente(g.cliente));
+    setWhatsapp({ cliente: g.cliente, texto: montarTextoWhatsapp(g.cliente, g.notas), telefone: telefoneDoCliente(g.cliente) });
   }
 
   function abrirWhatsappNota(n: NotaFiscalItem) {
-    abrirWhatsappTexto(n.cliente, montarTextoWhatsapp(n.cliente, [n]), telefoneDoCliente(n.cliente));
-  }
-
-  // V11: consolidado "Copiar tudo" da seção Cobrança - reaproveita a mesma janela/busca de `grupos`
-  function diasOuVencimentoTxt(n: NotaFiscalItem): string {
-    const dias = n.vencimento ? diasEntreHojeE(n.vencimento) : null;
-    if (dias === null) return "sem vencimento definido";
-    if (dias < 0) return `venceu há ${Math.abs(dias)} dia(s)`;
-    return `vence ${curta(n.vencimento)}`;
-  }
-
-  function montarTextoConsolidadoCobranca(listaGrupos: Grupo[]): string {
-    const linhas: string[] = [];
-    let total = 0;
-    for (const g of listaGrupos) {
-      for (const n of g.notas) {
-        const ref = n.mesReferencia && n.anoReferencia ? `${NOMES_MESES[n.mesReferencia]} / ${n.anoReferencia}` : "-";
-        linhas.push(`• ${g.cliente} — NF ${n.numeroNota || "-"}, ref ${ref}, ${brl(n.valor)}, ${diasOuVencimentoTxt(n)}`);
-        total += n.valor || 0;
-      }
-    }
-    return `*Cobranças YTALSEG — ${curta(hojeISO())}*\n\n${linhas.join("\n")}\n\nTotal: ${brl(total)}`;
+    setWhatsapp({ cliente: n.cliente, texto: montarTextoWhatsapp(n.cliente, [n]), telefone: telefoneDoCliente(n.cliente) });
   }
 
   function enviarWhatsapp() {
@@ -324,17 +236,6 @@ export default function Cobranca() {
     }
     const url = `https://wa.me/55${numero}?text=${encodeURIComponent(whatsapp.texto)}`;
     window.open(url, "_blank");
-  }
-
-  function handleCopiar(chave: string, texto: string) {
-    copiarTexto(texto).then((ok) => {
-      if (ok) {
-        setCopiadoId(chave);
-        setTimeout(() => setCopiadoId((atual) => (atual === chave ? null : atual)), 1500);
-      } else {
-        alert("Não consegui copiar automaticamente. Selecione e copie o texto manualmente.");
-      }
-    });
   }
 
   function abrirRegistrar(nota: NotaFiscalItem) {
@@ -469,12 +370,6 @@ export default function Cobranca() {
         .desfecho-opcoes { display: flex; flex-direction: column; gap: 8px; }
         .desfecho-opcoes label { display: flex; align-items: center; gap: 8px; font-weight: 800; color: #374151; }
         .vazio { color: #6b7280; font-weight: 700; padding: 30px; text-align: center; }
-        .cobranca-abas { display: flex; gap: 8px; margin-bottom: 14px; }
-        .aba-btn { border: 1px solid #e5e7eb; background: #fff; padding: 8px 16px; border-radius: 999px; font-weight: 900; cursor: pointer; color: #374151; }
-        .aba-btn.ativo { background: #111827; border-color: #111827; color: #fff; }
-        .cobranca-ajuda { color: #6b7280; font-size: 13px; font-weight: 700; margin-bottom: 12px; }
-        .cobranca-topo-acoes { display: flex; justify-content: flex-end; margin-bottom: 10px; }
-        .pendente-card { border-left: 4px solid #b45309; }
       `}</style>
 
       <div className="cobranca-topo">
@@ -503,37 +398,13 @@ export default function Cobranca() {
         </div>
       </div>
 
-      <div className="cobranca-abas">
-        <button className={`aba-btn ${aba === "cobranca" ? "ativo" : ""}`} onClick={() => setAba("cobranca")}>
-          Cobrança
-        </button>
-        <button className={`aba-btn ${aba === "pendentes" ? "ativo" : ""}`} onClick={() => setAba("pendentes")}>
-          Pendentes de nota{semNota.length > 0 ? ` (${semNota.length})` : ""}
-        </button>
-      </div>
-
       {erro && <div className="cobranca-erro">{erro}</div>}
 
-      {aba === "cobranca" && (
-        <>
-          <div className="cobranca-ajuda">
-            💡 "Copiar mensagem" / "Copiar tudo" é para colar no grupo do WhatsApp da empresa — o botão verde abre uma
-            conversa individual, mas o WhatsApp não permite abrir um grupo direto por link.
-          </div>
+      {!carregando && grupos.length === 0 && (
+        <div className="vazio">Nenhuma nota em aberto ou em atraso dentro da janela selecionada.</div>
+      )}
 
-          {grupos.length > 0 && (
-            <div className="cobranca-topo-acoes">
-              <button className="btn-mini" onClick={() => handleCopiar("topo", montarTextoConsolidadoCobranca(grupos))}>
-                {copiadoId === "topo" ? "Copiado!" : "📋 Copiar tudo"}
-              </button>
-            </div>
-          )}
-
-          {!carregando && grupos.length === 0 && (
-            <div className="vazio">Nenhuma nota em aberto ou em atraso dentro da janela selecionada.</div>
-          )}
-
-          {grupos.map((g) => (
+      {grupos.map((g) => (
         <div className="grupo-card" key={g.cliente}>
           <div className="grupo-topo">
             <div className="grupo-cliente">{g.cliente}</div>
@@ -541,12 +412,6 @@ export default function Cobranca() {
               <div className="grupo-total">Total devido: {brl(g.total)}</div>
               <button className="btn-whatsapp" onClick={() => abrirWhatsappCliente(g)}>
                 💬 Cobrar no WhatsApp
-              </button>
-              <button
-                className="btn-mini"
-                onClick={() => handleCopiar(`grupo:${g.cliente}`, montarTextoWhatsapp(g.cliente, g.notas))}
-              >
-                {copiadoId === `grupo:${g.cliente}` ? "Copiado!" : "📋 Copiar mensagem"}
               </button>
             </div>
           </div>
@@ -578,9 +443,6 @@ export default function Cobranca() {
                 </div>
                 <div className="nota-acoes">
                   <button className="btn-mini" onClick={() => abrirWhatsappNota(n)}>💬 Cobrar</button>
-                  <button className="btn-mini" onClick={() => handleCopiar(`nota:${n.id}`, montarTextoWhatsapp(n.cliente, [n]))}>
-                    {copiadoId === `nota:${n.id}` ? "Copiado!" : "📋 Copiar"}
-                  </button>
                   <button className="btn-mini" onClick={() => abrirRegistrar(n)}>Registrar cobrança</button>
                   {selo && (
                     <button className="btn-mini btn-mini-desfazer" onClick={() => desfazerRegistro(n, vinculo)}>
@@ -591,69 +453,8 @@ export default function Cobranca() {
               </div>
             );
           })}
-            </div>
-          ))}
-        </>
-      )}
-
-      {aba === "pendentes" && (
-        <>
-          <div className="cobranca-ajuda">
-            💡 Lançamentos do Financeiro sem nota fiscal emitida/vinculada ainda — lembrete interno para validar/emitir a
-            nota, não é cobrança ao cliente.
-          </div>
-
-          <div className="cobranca-controles" style={{ marginBottom: 14 }}>
-            <input
-              className="cobranca-busca"
-              placeholder="Buscar cliente..."
-              value={buscaPendentes}
-              onChange={(e) => setBuscaPendentes(e.target.value)}
-            />
-          </div>
-
-          {semNotaFiltrada.length > 0 && (
-            <div className="cobranca-topo-acoes">
-              <button
-                className="btn-mini"
-                onClick={() => handleCopiar("pend-topo", montarTextoConsolidadoPendentes(semNotaFiltrada))}
-              >
-                {copiadoId === "pend-topo" ? "Copiado!" : "📋 Copiar tudo"}
-              </button>
-            </div>
-          )}
-
-          {!carregando && semNotaFiltrada.length === 0 && (
-            <div className="vazio">Nenhum lançamento pendente de nota fiscal.</div>
-          )}
-
-          {semNotaFiltrada.map((l) => (
-            <div className="grupo-card pendente-card" key={l.id}>
-              <div className="grupo-topo">
-                <div className="grupo-cliente">{l.cliente}</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div className="grupo-total">{brl(l.valor)}</div>
-                  <button
-                    className="btn-whatsapp"
-                    onClick={() => abrirWhatsappTexto(l.cliente, montarTextoPendente(l), telefoneDoCliente(l.cliente))}
-                  >
-                    💬 Enviar no WhatsApp
-                  </button>
-                  <button className="btn-mini" onClick={() => handleCopiar(`pend:${l.id}`, montarTextoPendente(l))}>
-                    {copiadoId === `pend:${l.id}` ? "Copiado!" : "📋 Copiar mensagem"}
-                  </button>
-                </div>
-              </div>
-              <div className="nota-detalhe" style={{ padding: "10px 0" }}>
-                Ref: {refTextoLancamento(l)} • Emitido em {curta(l.dataEmissao)}
-                <span className="badge badge-semvenc" style={{ marginLeft: 8 }}>
-                  Falta emitir/validar nota
-                </span>
-              </div>
-            </div>
-          ))}
-        </>
-      )}
+        </div>
+      ))}
 
       {whatsapp && (
         <div className="modal-fundo" onClick={() => setWhatsapp(null)}>
