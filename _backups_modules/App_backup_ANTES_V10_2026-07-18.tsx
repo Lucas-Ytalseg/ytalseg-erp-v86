@@ -17,9 +17,8 @@ import Equipe from "./modules/Equipe";
 const NotaFiscal = React.lazy(() => import("./modules/NotaFiscal"));
 import Configuracoes from "./modules/Configuracoes";
 import ConfiguracoesSistema from "./modules/ConfiguracoesSistema";
-const Cobranca = React.lazy(() => import("./modules/Cobranca"));
 
-type MenuKey = "dashboard" | "banco-local" | "auditoria" | "permissoes" | "backup" | "config-sistema" | "relatorios" | "clientes" | "financeiro" | "equipe" | "notafiscal" | "configuracoes" | "historico-pdfs" | "cobranca";
+type MenuKey = "dashboard" | "banco-local" | "auditoria" | "permissoes" | "backup" | "config-sistema" | "relatorios" | "clientes" | "financeiro" | "equipe" | "notafiscal" | "configuracoes" | "historico-pdfs";
 
 const VERDE = "#00B050";
 
@@ -40,7 +39,6 @@ const PERMISSOES_MENU: Record<PerfilUsuario, MenuKey[]> = {
     "configuracoes",
     "historico-pdfs",
     "backup",
-    "cobranca",
   ],
   operador: [
     "dashboard",
@@ -55,7 +53,6 @@ const PERMISSOES_MENU: Record<PerfilUsuario, MenuKey[]> = {
     "financeiro",
     "notafiscal",
     "historico-pdfs",
-    "cobranca",
   ],
   consulta: [
     "dashboard",
@@ -124,7 +121,6 @@ export default function App() {
     { id: "financeiro", label: "Financeiro", icon: "💰" },
     { id: "equipe", label: "Equipe", icon: "👷" },
     { id: "notafiscal", label: "Nota Fiscal", icon: "🧾" },
-    { id: "cobranca", label: "Cobrança", icon: "💸" },
     { id: "configuracoes", label: "Configurações", icon: "⚙️" },
     { id: "historico-pdfs", label: "Histórico PDFs", icon: "📁" },
   ];
@@ -147,7 +143,7 @@ export default function App() {
     {
       titulo: "Gestão",
       icone: "👥",
-      ids: ["clientes", "financeiro", "equipe", "notafiscal", "cobranca", "permissoes"],
+      ids: ["clientes", "financeiro", "equipe", "notafiscal", "permissoes"],
     },
     {
       titulo: "Dados e Segurança",
@@ -629,7 +625,6 @@ export default function App() {
             {menu === "financeiro" && "Financeiro"}
             {menu === "equipe" && "Equipe"}
             {menu === "notafiscal" && "Nota Fiscal"}
-            {menu === "cobranca" && "Cobrança"}
             {menu === "configuracoes" && "Configurações"}
             {menu === "historico-pdfs" && "Histórico de PDFs"}
           </h2>
@@ -659,7 +654,6 @@ export default function App() {
           {menu === "financeiro" && <Financeiro />}
           {menu === "equipe" && <Equipe />}
           {menu === "notafiscal" && <NotaFiscal />}
-          {menu === "cobranca" && <Cobranca />}
           {menu === "configuracoes" && <Configuracoes />}
           {menu === "historico-pdfs" && <HistoricoPDFs onAbrirRelatorio={() => setMenu("relatorios")} />}
           </React.Suspense>

@@ -111,7 +111,6 @@ class EmpresaPayload(BaseModel):
     id: Optional[str] = None
     nome: str
     cnpj: str = ""
-    telefone: str = ""
     diaria_diurna: float = 0
     diaria_noturna: float = 0
     sabado: float = 0
@@ -732,10 +731,6 @@ def init_db():
     novas_colunas_notas = {
         "cancelada": "INTEGER DEFAULT 0",
         "data_recebimento": "TEXT DEFAULT ''",
-        # ===== MIGRAÇÃO V10: registro de cobrança (só usado quando a nota NÃO tem vínculo com o Financeiro) =====
-        "cobranca_status": "TEXT DEFAULT ''",
-        "cobranca_data": "TEXT DEFAULT ''",
-        "cobranca_obs": "TEXT DEFAULT ''",
     }
     for nome_coluna, definicao in novas_colunas_notas.items():
         if nome_coluna not in colunas_notas:
@@ -857,13 +852,6 @@ class MarcarRecebidasPayload(BaseModel):
     ids: List[str]
     dataRecebimento: str
 
-class CobrancaPayload(BaseModel):
-    # Registro de cobrança de uma nota SEM vínculo com o Financeiro (V10).
-    # status == "" limpa os 3 campos (desfazer). status em {"cobrado", "prometeu_pagar", "negociacao"}.
-    status: Optional[str] = None
-    data: Optional[str] = None
-    obs: Optional[str] = None
-
 class VincularFinanceiroPayload(BaseModel):
     financeiroId: str
 
@@ -947,9 +935,6 @@ def row_nota_fiscal(row):
         "financeiroId": row["financeiro_id"] or "",
         "cancelada": bool(row["cancelada"]) if "cancelada" in chaves and row["cancelada"] is not None else False,
         "dataRecebimento": (row["data_recebimento"] if "data_recebimento" in chaves else "") or "",
-        "cobrancaStatus": (row["cobranca_status"] if "cobranca_status" in chaves else "") or "",
-        "cobrancaData": (row["cobranca_data"] if "cobranca_data" in chaves else "") or "",
-        "cobrancaObs": (row["cobranca_obs"] if "cobranca_obs" in chaves else "") or "",
     }
 
 def row_vinculo(row):
@@ -1560,46 +1545,6 @@ def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload):
                 _propagar_status_vinculo(conn, vinculo, origem="nota")
         conn.commit()
 
-    row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
-    conn.close()
-    return {"status": "ok", "item": row_nota_fiscal(row)}
-
-@app.patch("/notas-fiscais/{item_id}/cobranca")
-def registrar_cobranca_nota(item_id: str, payload: CobrancaPayload):
-    # Só existe pra notas SEM vínculo com o Financeiro (aba Cobrança, V10) - quando há
-    # vínculo, o registro de cobrança é feito via POST /financeiro (mesmo fluxo de sempre),
-    # que já propaga pro lado da nota. Este endpoint nunca toca em cancelada/data_recebimento
-    # nem dispara propagação de vínculo - é só a etiqueta de "última cobrança" da própria nota.
-    conn = conectar_db()
-    row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
-    if not row:
-        conn.close()
-        return {"status": "erro", "erro": "Registro não encontrado"}
-
-    if payload.status == "":
-        conn.execute(
-            "UPDATE notas_fiscais SET cobranca_status = '', cobranca_data = '', cobranca_obs = '' WHERE id = ?",
-            (item_id,),
-        )
-    else:
-        campos = []
-        valores = []
-        if payload.status is not None:
-            campos.append("cobranca_status = ?")
-            valores.append(payload.status)
-            campos.append("cobranca_data = ?")
-            valores.append(payload.data or datetime.now().strftime("%Y-%m-%d"))
-        elif payload.data is not None:
-            campos.append("cobranca_data = ?")
-            valores.append(payload.data)
-        if payload.obs is not None:
-            campos.append("cobranca_obs = ?")
-            valores.append(payload.obs)
-        if campos:
-            valores.append(item_id)
-            conn.execute(f"UPDATE notas_fiscais SET {', '.join(campos)} WHERE id = ?", valores)
-
-    conn.commit()
     row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
     conn.close()
     return {"status": "ok", "item": row_nota_fiscal(row)}

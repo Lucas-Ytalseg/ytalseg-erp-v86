@@ -7,7 +7,6 @@ type Empresa = {
   id: string;
   nome: string;
   cnpj: string;
-  telefone?: string;
   diaria_diurna: number;
   diaria_noturna: number;
   sabado: number;
@@ -24,7 +23,6 @@ const vazio = {
   id: "",
   nome: "",
   cnpj: "",
-  telefone: "",
   diaria_diurna: 0,
   diaria_noturna: 0,
   sabado: 0,
@@ -79,7 +77,6 @@ export default function Clientes() {
       id: cliente.id,
       nome: cliente.nome || "",
       cnpj: cliente.cnpj || "",
-      telefone: cliente.telefone || "",
       diaria_diurna: cliente.diaria_diurna || 0,
       diaria_noturna: cliente.diaria_noturna || 0,
       sabado: cliente.sabado || 0,
@@ -414,10 +411,6 @@ export default function Clientes() {
               <input value={form.cnpj} placeholder="00.000.000/0000-00" onChange={(e) => atualizar("cnpj", e.target.value)} />
             </div>
             <div className="field">
-              <label>Telefone / WhatsApp</label>
-              <input value={form.telefone} placeholder="(11) 99999-9999" onChange={(e) => atualizar("telefone", e.target.value)} />
-            </div>
-            <div className="field">
               <label>Diária diurna</label>
               <input type="number" value={form.diaria_diurna} onChange={(e) => atualizar("diaria_diurna", e.target.value)} />
             </div>
@@ -481,7 +474,6 @@ export default function Clientes() {
               <div>
                 <div className="cliente-nome">{cliente.nome}</div>
                 <div className="cliente-cnpj">CNPJ: {cliente.cnpj || "-"}</div>
-                <div className="cliente-cnpj">Telefone: {cliente.telefone || "-"}</div>
               </div>
             </div>
 
