@@ -595,27 +595,9 @@ def montar_dashboard_financeiro():
         item["financeiroIdResolvido"] = financeiro_id_resolvido
         notas_enriquecidas.append(item)
 
-    # Notas já recebidas mas sem vínculo formal na tabela `vinculos` (ex.: vínculo nunca
-    # foi confirmado na tela) - sem isso, o lançamento correspondente ficaria pra sempre
-    # na lista de "pendente de nota" mesmo já tendo nota emitida E recebida. Mesmo critério
-    # de match usado nas sugestões de vínculo (_buscar_candidatos): cliente substring nos
-    # dois sentidos + valor ±R$0,01.
-    ids_notas_ja_vinculadas = {v["nota_id"] for v in vinculos_rows if v["nota_id"]}
-    notas_recebidas_sem_vinculo = [
-        n for n in notas if n["data_recebimento"] and n["id"] not in ids_notas_ja_vinculadas
-    ]
-
-    def _tem_nota_recebida_correspondente(f) -> bool:
-        return any(
-            _cliente_bate(f["cliente"], n["cliente"]) and abs((n["valor"] or 0) - (f["valor"] or 0)) < 0.01
-            for n in notas_recebidas_sem_vinculo
-        )
-
     sem_nota_emitida = [
         row_financeiro(f) for f in financeiro_rows
-        if f["id"] not in financeiro_usados
-        and (f["status"] or "") != "nota_cancelada"
-        and not _tem_nota_recebida_correspondente(f)
+        if f["id"] not in financeiro_usados and (f["status"] or "") != "nota_cancelada"
     ]
 
     vinculos_financeiro = {}
