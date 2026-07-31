@@ -595,23 +595,32 @@ def montar_dashboard_financeiro():
         item["financeiroIdResolvido"] = financeiro_id_resolvido
         notas_enriquecidas.append(item)
 
-    # Notas já recebidas mas sem vínculo formal na tabela `vinculos` (ex.: vínculo nunca
-    # foi confirmado na tela) - sem isso, o lançamento correspondente ficaria pra sempre
-    # na lista de "pendente de nota" mesmo já tendo nota emitida E recebida. Cobre também
-    # o caso de lançamento já com status='recebido' (baixa dada direto no Financeiro) ou
-    # com nota_enviada=1 (campo legado gravável direto no lançamento, de antes do sistema
-    # de vínculo existir - ainda usado pela tela do Financeiro). Mesmo critério de match
-    # usado nas sugestões de vínculo (_buscar_candidatos): cliente substring nos dois
-    # sentidos + valor ±R$0,01.
-    ids_notas_ja_vinculadas = {v["nota_id"] for v in vinculos_rows if v["nota_id"]}
-    notas_recebidas_sem_vinculo = [
-        n for n in notas if n["data_recebimento"] and n["id"] not in ids_notas_ja_vinculadas
-    ]
+    # Um lançamento também pode estar vinculado direto a um Relatório/Histórico de PDFs
+    # (vinculos.historico_id) em vez de a uma Nota Fiscal - alguns clientes são cobrados só
+    # com relatório, sem nota fiscal formal nunca chegando a existir para eles. Sem isso,
+    # esses lançamentos nunca sairiam da lista de "pendente de nota", mesmo já tendo o
+    # relatório emitido/enviado e formalmente vinculado.
+    for v in vinculos_rows:
+        if v["historico_id"] and v["lancamento_id"]:
+            financeiro_usados.add(v["lancamento_id"])
 
-    def _tem_nota_recebida_correspondente(f) -> bool:
+    # Notas já emitidas (recebidas ou não) mas sem vínculo formal na tabela `vinculos`
+    # (ex.: vínculo nunca foi confirmado na tela) - sem isso, o lançamento correspondente
+    # ficaria pra sempre na lista de "pendente de nota" mesmo já tendo nota emitida. O
+    # propósito do aviso é "falta emitir a nota" - se a nota já existe (mesmo ainda não
+    # recebida), esse propósito já foi cumprido, então não exige data_recebimento aqui.
+    # Cobre também o caso de lançamento já com status='recebido' (baixa dada direto no
+    # Financeiro) ou com nota_enviada=1 (campo legado gravável direto no lançamento, de
+    # antes do sistema de vínculo existir - ainda usado pela tela do Financeiro). Mesmo
+    # critério de match usado nas sugestões de vínculo (_buscar_candidatos): cliente
+    # substring nos dois sentidos + valor ±R$0,01.
+    ids_notas_ja_vinculadas = {v["nota_id"] for v in vinculos_rows if v["nota_id"]}
+    notas_sem_vinculo = [n for n in notas if n["id"] not in ids_notas_ja_vinculadas]
+
+    def _tem_nota_correspondente(f) -> bool:
         return any(
             _cliente_bate(f["cliente"], n["cliente"]) and abs((n["valor"] or 0) - (f["valor"] or 0)) < 0.01
-            for n in notas_recebidas_sem_vinculo
+            for n in notas_sem_vinculo
         )
 
     sem_nota_emitida = [
@@ -620,7 +629,11 @@ def montar_dashboard_financeiro():
         and (f["status"] or "") != "nota_cancelada"
         and (f["status"] or "") != "recebido"
         and not f["nota_enviada"]
-        and not _tem_nota_recebida_correspondente(f)
+        # Campo "N°F" preenchido manualmente (ex.: "S/N" pra marcar "sem nota fiscal,
+        # cliente cobrado só por relatório") já é o Lucas dizendo que esse lançamento
+        # está resolvido - não é "falta emitir/vincular nota".
+        and not (f["nota"] or "").strip()
+        and not _tem_nota_correspondente(f)
     ]
 
     vinculos_financeiro = {}
