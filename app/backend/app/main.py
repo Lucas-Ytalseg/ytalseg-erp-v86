@@ -628,6 +628,10 @@ def montar_dashboard_financeiro():
         if f["id"] not in financeiro_usados
         and (f["status"] or "") != "nota_cancelada"
         and (f["status"] or "") != "recebido"
+        # "nota_enviada" é um valor do próprio campo `status` (selecionável no Financeiro,
+        # separado do checkbox booleano `nota_enviada`/dataEnvioNota abaixo) - qualquer um
+        # dos dois já significa "nota enviada", não precisa dos dois juntos.
+        and (f["status"] or "") != "nota_enviada"
         and not f["nota_enviada"]
         # Campo "N°F" preenchido manualmente (ex.: "S/N" pra marcar "sem nota fiscal,
         # cliente cobrado só por relatório") já é o Lucas dizendo que esse lançamento
