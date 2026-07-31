@@ -623,20 +623,23 @@ def montar_dashboard_financeiro():
             for n in notas_sem_vinculo
         )
 
+    # Marcação manual de "nota enviada" (status='nota_enviada' OU o checkbox/data de envio)
+    # e o campo "N°F" (número real ou "S/N") são dois campos digitados à mão, separados -
+    # só contam como resolvido quando os DOIS estão preenchidos juntos. Um sozinho sem o
+    # outro é sinal de esquecimento (marcou enviada mas não anotou o número, ou anotou o
+    # número mas esqueceu de marcar como enviada) e deve continuar aparecendo como
+    # pendente, funcionando como contra-checagem dos dois campos.
+    def _nota_manualmente_resolvida(f) -> bool:
+        marcado_enviada = (f["status"] or "") == "nota_enviada" or bool(f["nota_enviada"])
+        tem_numero_ou_sn = bool((f["nota"] or "").strip())
+        return marcado_enviada and tem_numero_ou_sn
+
     sem_nota_emitida = [
         row_financeiro(f) for f in financeiro_rows
         if f["id"] not in financeiro_usados
         and (f["status"] or "") != "nota_cancelada"
         and (f["status"] or "") != "recebido"
-        # "nota_enviada" é um valor do próprio campo `status` (selecionável no Financeiro,
-        # separado do checkbox booleano `nota_enviada`/dataEnvioNota abaixo) - qualquer um
-        # dos dois já significa "nota enviada", não precisa dos dois juntos.
-        and (f["status"] or "") != "nota_enviada"
-        and not f["nota_enviada"]
-        # Campo "N°F" preenchido manualmente (ex.: "S/N" pra marcar "sem nota fiscal,
-        # cliente cobrado só por relatório") já é o Lucas dizendo que esse lançamento
-        # está resolvido - não é "falta emitir/vincular nota".
-        and not (f["nota"] or "").strip()
+        and not _nota_manualmente_resolvida(f)
         and not _tem_nota_correspondente(f)
     ]
 
