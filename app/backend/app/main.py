@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -1004,6 +1004,133 @@ def auth_recuperar_admin(payload: RecuperarAdminPayload):
     conn.close()
     return {"ok": True}
 
+# ===== DEPENDENCIAS DE AUTENTICACAO: usar como Depends() nas rotas sensiveis =====
+def obter_sessao(authorization: Optional[str] = Header(None)) -> dict:
+    token = extrair_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Nao autenticado")
+    conn = conectar_db()
+    linha = conn.execute(
+        "SELECT usuario, perfil FROM sessoes WHERE token = ?", (token,)
+    ).fetchone()
+    conn.close()
+    if not linha:
+        raise HTTPException(status_code=401, detail="Sessao invalida ou expirada")
+    return {"usuario": linha["usuario"], "perfil": linha["perfil"]}
+
+def exigir_admin(sessao: dict = Depends(obter_sessao)) -> dict:
+    if sessao["perfil"] != "admin":
+        raise HTTPException(status_code=403, detail="Acao permitida apenas para o admin")
+    return sessao
+
+# ===== GESTAO DE USUARIOS (admin) =====
+class CriarUsuarioPayload(BaseModel):
+    usuario: str
+    senha: str
+    perfil: str = "visualizacao"
+
+class RedefinirSenhaPayload(BaseModel):
+    nova_senha: str
+
+class TrocarSenhaPayload(BaseModel):
+    senha_atual: str
+    nova_senha: str
+
+@app.get("/usuarios")
+def listar_usuarios(sessao: dict = Depends(exigir_admin)):
+    conn = conectar_db()
+    rows = conn.execute(
+        "SELECT id, usuario, perfil, ativo, criado_em FROM usuarios ORDER BY criado_em ASC"
+    ).fetchall()
+    conn.close()
+    return {"status": "ok", "usuarios": [dict(r) for r in rows]}
+
+@app.post("/usuarios")
+def criar_usuario(payload: CriarUsuarioPayload, sessao: dict = Depends(exigir_admin)):
+    usuario_norm = payload.usuario.strip().lower()
+    if not usuario_norm:
+        raise HTTPException(status_code=400, detail="Usuario invalido")
+    if payload.perfil not in ("admin", "visualizacao"):
+        raise HTTPException(status_code=400, detail="Perfil invalido (use admin ou visualizacao)")
+    if len(payload.senha) < 8:
+        raise HTTPException(status_code=400, detail="A senha precisa ter pelo menos 8 caracteres")
+
+    conn = conectar_db()
+    cur = conn.cursor()
+    if cur.execute("SELECT 1 FROM usuarios WHERE usuario = ?", (usuario_norm,)).fetchone():
+        conn.close()
+        raise HTTPException(status_code=409, detail="Esse nome de usuario ja existe")
+
+    salt = gerar_salt()
+    cur.execute(
+        "INSERT INTO usuarios (id, usuario, senha_hash, salt, perfil, ativo, criado_em) "
+        "VALUES (?, ?, ?, ?, ?, 1, ?)",
+        (str(uuid.uuid4()), usuario_norm, hash_senha(payload.senha, salt), salt, payload.perfil, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "usuario": usuario_norm}
+
+@app.delete("/usuarios/{usuario_id}")
+def excluir_usuario(usuario_id: str, sessao: dict = Depends(exigir_admin)):
+    conn = conectar_db()
+    cur = conn.cursor()
+    alvo = cur.execute("SELECT * FROM usuarios WHERE id = ?", (usuario_id,)).fetchone()
+    if not alvo:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+    if alvo["perfil"] == "admin":
+        total_admins = cur.execute(
+            "SELECT COUNT(*) AS n FROM usuarios WHERE perfil = 'admin' AND ativo = 1"
+        ).fetchone()["n"]
+        if total_admins <= 1:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Nao e possivel excluir o unico admin do sistema")
+    cur.execute("DELETE FROM usuarios WHERE id = ?", (usuario_id,))
+    cur.execute("DELETE FROM sessoes WHERE usuario = ?", (alvo["usuario"],))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "id": usuario_id}
+
+@app.patch("/usuarios/{usuario_id}/senha")
+def redefinir_senha_usuario(usuario_id: str, payload: RedefinirSenhaPayload, sessao: dict = Depends(exigir_admin)):
+    if len(payload.nova_senha) < 8:
+        raise HTTPException(status_code=400, detail="A nova senha precisa ter pelo menos 8 caracteres")
+    conn = conectar_db()
+    cur = conn.cursor()
+    alvo = cur.execute("SELECT * FROM usuarios WHERE id = ?", (usuario_id,)).fetchone()
+    if not alvo:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+    novo_salt = gerar_salt()
+    cur.execute(
+        "UPDATE usuarios SET senha_hash = ?, salt = ? WHERE id = ?",
+        (hash_senha(payload.nova_senha, novo_salt), novo_salt, usuario_id),
+    )
+    cur.execute("DELETE FROM sessoes WHERE usuario = ?", (alvo["usuario"],))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+@app.post("/auth/trocar-senha")
+def trocar_propria_senha(payload: TrocarSenhaPayload, sessao: dict = Depends(obter_sessao)):
+    if len(payload.nova_senha) < 8:
+        raise HTTPException(status_code=400, detail="A nova senha precisa ter pelo menos 8 caracteres")
+    conn = conectar_db()
+    cur = conn.cursor()
+    linha = cur.execute("SELECT * FROM usuarios WHERE usuario = ?", (sessao["usuario"],)).fetchone()
+    if not linha or not verificar_senha(payload.senha_atual, linha["salt"], linha["senha_hash"]):
+        conn.close()
+        raise HTTPException(status_code=401, detail="Senha atual incorreta")
+    novo_salt = gerar_salt()
+    cur.execute(
+        "UPDATE usuarios SET senha_hash = ?, salt = ? WHERE id = ?",
+        (hash_senha(payload.nova_senha, novo_salt), novo_salt, linha["id"]),
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
 class FinanceiroPayload(BaseModel):
     id: Optional[str] = None
     cliente: str
@@ -1182,7 +1309,7 @@ def health():
     return {"status": "ok"}
 
 @app.get("/empresas")
-def listar_empresas():
+def listar_empresas(sessao: dict = Depends(obter_sessao)):
     empresas = carregar_empresas()
     return {
         "status": "ok",
@@ -1190,14 +1317,14 @@ def listar_empresas():
     }
 
 @app.get("/empresas/{empresa_id}")
-def obter_empresa_api(empresa_id: str):
+def obter_empresa_api(empresa_id: str, sessao: dict = Depends(obter_sessao)):
     empresas = carregar_empresas()
     if empresa_id not in empresas:
         return {"status": "erro", "erro": "Empresa não encontrada"}
     return {"status": "ok", "id": empresa_id, "empresa": empresas[empresa_id]}
 
 @app.post("/empresas")
-def salvar_empresa_api(payload: EmpresaPayload):
+def salvar_empresa_api(payload: EmpresaPayload, sessao: dict = Depends(exigir_admin)):
     empresas = carregar_empresas()
     empresa_id = (payload.id or gerar_id_empresa(payload.nome)).lower().strip()
     empresa_id = re.sub(r"[^a-z0-9_]+", "_", empresa_id).strip("_")
@@ -1209,7 +1336,7 @@ def salvar_empresa_api(payload: EmpresaPayload):
     return {"status": "ok", "id": empresa_id, "empresa": dados, "mensagem": "Empresa salva com sucesso"}
 
 @app.delete("/empresas/{empresa_id}")
-def excluir_empresa_api(empresa_id: str):
+def excluir_empresa_api(empresa_id: str, sessao: dict = Depends(exigir_admin)):
     empresas = carregar_empresas()
     if empresa_id not in empresas:
         return {"status": "erro", "erro": "Empresa não encontrada"}
@@ -1220,19 +1347,19 @@ def excluir_empresa_api(empresa_id: str):
     return {"status": "ok", "id": empresa_id, "empresa": removida, "mensagem": "Empresa excluída com sucesso"}
 
 @app.get("/financeiro")
-def listar_financeiro():
+def listar_financeiro(sessao: dict = Depends(obter_sessao)):
     conn = conectar_db()
     rows = conn.execute("SELECT * FROM financeiro ORDER BY data_emissao DESC, rowid DESC").fetchall()
     conn.close()
     return {"status": "ok", "lancamentos": [row_financeiro(r) for r in rows]}
 
 @app.get("/dashboard/financeiro-notas")
-def dashboard_financeiro_notas():
+def dashboard_financeiro_notas(sessao: dict = Depends(obter_sessao)):
     notas, sem_nota_emitida, vinculos_financeiro = montar_dashboard_financeiro()
     return {"status": "ok", "notas": notas, "semNotaEmitida": sem_nota_emitida, "vinculosFinanceiro": vinculos_financeiro}
 
 @app.get("/vinculos")
-def listar_vinculos(cliente: Optional[str] = None, mes: Optional[int] = None, ano: Optional[int] = None):
+def listar_vinculos(cliente: Optional[str] = None, mes: Optional[int] = None, ano: Optional[int] = None, sessao: dict = Depends(obter_sessao)):
     conn = conectar_db()
     rows = conn.execute("SELECT * FROM vinculos ORDER BY atualizado_em DESC").fetchall()
     financeiro_map = {r["id"]: r for r in conn.execute("SELECT * FROM financeiro").fetchall()}
@@ -1275,7 +1402,7 @@ _TABELA_POR_TIPO = {
 }
 
 @app.get("/vinculos/sugestoes")
-def sugestoes_vinculos(tipo: str, id: str):
+def sugestoes_vinculos(tipo: str, id: str, sessao: dict = Depends(obter_sessao)):
     if tipo not in _TABELA_POR_TIPO:
         return {"status": "erro", "erro": "tipo inválido (use financeiro, nota ou historico)"}
     tabela_origem, _, _ = _TABELA_POR_TIPO[tipo]
@@ -1402,11 +1529,11 @@ def _criar_vinculo_core(payload: VinculoCreatePayload) -> dict:
     return {"status": "ok", "vinculo": row_vinculo(row)}
 
 @app.post("/vinculos")
-def criar_vinculo(payload: VinculoCreatePayload):
+def criar_vinculo(payload: VinculoCreatePayload, sessao: dict = Depends(exigir_admin)):
     return _criar_vinculo_core(payload)
 
 @app.delete("/vinculos/{vinculo_id}")
-def excluir_vinculo(vinculo_id: str):
+def excluir_vinculo(vinculo_id: str, sessao: dict = Depends(exigir_admin)):
     """Desvincula (nunca apaga financeiro/nota/histórico, só o elo entre eles)."""
     conn = conectar_db()
     row = conn.execute("SELECT * FROM vinculos WHERE id = ?", (vinculo_id,)).fetchone()
@@ -1419,7 +1546,7 @@ def excluir_vinculo(vinculo_id: str):
     return {"status": "ok", "id": vinculo_id}
 
 @app.post("/financeiro")
-def salvar_financeiro(payload: FinanceiroPayload):
+def salvar_financeiro(payload: FinanceiroPayload, sessao: dict = Depends(exigir_admin)):
     item_id = payload.id or gerar_id()
     data_emissao = payload.dataEmissao or datetime.now().strftime("%Y-%m-%d")
 
@@ -1468,7 +1595,7 @@ def salvar_financeiro(payload: FinanceiroPayload):
     return {"status": "ok", "lancamento": row_financeiro(row)}
 
 @app.delete("/financeiro/{item_id}")
-def excluir_financeiro(item_id: str):
+def excluir_financeiro(item_id: str, sessao: dict = Depends(exigir_admin)):
     conn = conectar_db()
     _cascade_excluir_vinculos_de(conn, lancamento_id=item_id)
     conn.execute("DELETE FROM financeiro WHERE id = ?", (item_id,))
@@ -1477,14 +1604,14 @@ def excluir_financeiro(item_id: str):
     return {"status": "ok", "id": item_id}
 
 @app.get("/historico-pdfs")
-def listar_historico_pdfs():
+def listar_historico_pdfs(sessao: dict = Depends(obter_sessao)):
     conn = conectar_db()
     rows = conn.execute("SELECT * FROM historico_pdfs ORDER BY criado_em DESC").fetchall()
     conn.close()
     return {"status": "ok", "historico": [row_historico_resumo(r) for r in rows]}
 
 @app.get("/historico-pdfs/{item_id}")
-def obter_historico_pdf(item_id: str):
+def obter_historico_pdf(item_id: str, sessao: dict = Depends(obter_sessao)):
     conn = conectar_db()
     row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
     conn.close()
@@ -1495,7 +1622,7 @@ def obter_historico_pdf(item_id: str):
     return {"status": "ok", "item": item}
 
 @app.post("/historico-pdfs/upload")
-async def upload_historico_pdfs(files: List[UploadFile] = File(...)):
+async def upload_historico_pdfs(files: List[UploadFile] = File(...), sessao: dict = Depends(exigir_admin)):
     criados = []
     erros = []
     conn = conectar_db()
@@ -1536,7 +1663,7 @@ async def upload_historico_pdfs(files: List[UploadFile] = File(...)):
     return {"status": "ok", "itens": criados, "erros": erros}
 
 @app.patch("/historico-pdfs/{item_id}")
-def editar_historico_pdf(item_id: str, payload: HistoricoPdfEditPayload):
+def editar_historico_pdf(item_id: str, payload: HistoricoPdfEditPayload, sessao: dict = Depends(exigir_admin)):
     conn = conectar_db()
     row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
     if not row:
@@ -1574,7 +1701,7 @@ def editar_historico_pdf(item_id: str, payload: HistoricoPdfEditPayload):
     return {"status": "ok", "item": row_historico_resumo(row)}
 
 @app.get("/historico-pdfs/{item_id}/arquivo")
-def obter_arquivo_historico_pdf(item_id: str, baixar: int = 0):
+def obter_arquivo_historico_pdf(item_id: str, baixar: int = 0, sessao: dict = Depends(obter_sessao)):
     conn = conectar_db()
     row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
     conn.close()
@@ -1595,7 +1722,7 @@ def obter_arquivo_historico_pdf(item_id: str, baixar: int = 0):
     )
 
 @app.post("/historico-pdfs")
-def salvar_historico_pdf(payload: HistoricoPdfPayload):
+def salvar_historico_pdf(payload: HistoricoPdfPayload, sessao: dict = Depends(exigir_admin)):
     item_id = payload.id or gerar_id()
     criado_em = datetime.now().isoformat()
     dados_json = json.dumps(payload.dados, ensure_ascii=False) if payload.dados else None
@@ -1615,7 +1742,7 @@ def salvar_historico_pdf(payload: HistoricoPdfPayload):
     return {"status": "ok", "item": row_historico_resumo(row)}
 
 @app.delete("/historico-pdfs/{item_id}")
-def excluir_historico_pdf(item_id: str):
+def excluir_historico_pdf(item_id: str, sessao: dict = Depends(exigir_admin)):
     conn = conectar_db()
     row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
     if row and row["tem_arquivo"] and row["arquivo_nome"]:
@@ -1629,7 +1756,7 @@ def excluir_historico_pdf(item_id: str):
     return {"status": "ok", "id": item_id}
 
 @app.delete("/historico-pdfs")
-def limpar_historico_pdfs():
+def limpar_historico_pdfs(sessao: dict = Depends(exigir_admin)):
     conn = conectar_db()
     conn.execute("DELETE FROM historico_pdfs")
     conn.commit()
@@ -1637,7 +1764,7 @@ def limpar_historico_pdfs():
     return {"status": "ok"}
 
 @app.post("/notas-fiscais/upload")
-async def upload_notas_fiscais(files: List[UploadFile] = File(...)):
+async def upload_notas_fiscais(files: List[UploadFile] = File(...), sessao: dict = Depends(exigir_admin)):
     criados = []
     erros = []
     conn = conectar_db()
@@ -1680,7 +1807,7 @@ async def upload_notas_fiscais(files: List[UploadFile] = File(...)):
     return {"status": "ok", "itens": criados, "erros": erros}
 
 @app.get("/notas-fiscais")
-def listar_notas_fiscais(mes: Optional[int] = None, ano: Optional[int] = None, cliente: Optional[str] = None):
+def listar_notas_fiscais(mes: Optional[int] = None, ano: Optional[int] = None, cliente: Optional[str] = None, sessao: dict = Depends(obter_sessao)):
     conn = conectar_db()
     rows = conn.execute("SELECT * FROM notas_fiscais ORDER BY criado_em DESC").fetchall()
     conn.close()
@@ -1695,7 +1822,7 @@ def listar_notas_fiscais(mes: Optional[int] = None, ano: Optional[int] = None, c
     return {"status": "ok", "notas": itens}
 
 @app.post("/notas-fiscais/marcar-recebidas")
-def marcar_notas_recebidas(payload: MarcarRecebidasPayload):
+def marcar_notas_recebidas(payload: MarcarRecebidasPayload, sessao: dict = Depends(exigir_admin)):
     """Marca em lote uma lista de notas como recebidas, todas com a mesma data.
     Notas canceladas são puladas (não faz sentido marcar cancelada como recebida)."""
     if not payload.ids:
@@ -1723,7 +1850,7 @@ def marcar_notas_recebidas(payload: MarcarRecebidasPayload):
     return {"status": "ok", "atualizadas": atualizadas, "puladas": puladas}
 
 @app.patch("/notas-fiscais/{item_id}")
-def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload):
+def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload, sessao: dict = Depends(exigir_admin)):
     conn = conectar_db()
     row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
     if not row:
@@ -1764,7 +1891,7 @@ def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload):
     return {"status": "ok", "item": row_nota_fiscal(row)}
 
 @app.patch("/notas-fiscais/{item_id}/cobranca")
-def registrar_cobranca_nota(item_id: str, payload: CobrancaPayload):
+def registrar_cobranca_nota(item_id: str, payload: CobrancaPayload, sessao: dict = Depends(exigir_admin)):
     # Só existe pra notas SEM vínculo com o Financeiro (aba Cobrança, V10) - quando há
     # vínculo, o registro de cobrança é feito via POST /financeiro (mesmo fluxo de sempre),
     # que já propaga pro lado da nota. Este endpoint nunca toca em cancelada/data_recebimento
@@ -1804,7 +1931,7 @@ def registrar_cobranca_nota(item_id: str, payload: CobrancaPayload):
     return {"status": "ok", "item": row_nota_fiscal(row)}
 
 @app.get("/notas-fiscais/{item_id}/arquivo")
-def obter_arquivo_nota_fiscal(item_id: str, baixar: int = 0):
+def obter_arquivo_nota_fiscal(item_id: str, baixar: int = 0, sessao: dict = Depends(obter_sessao)):
     conn = conectar_db()
     row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
     conn.close()
@@ -1825,7 +1952,7 @@ def obter_arquivo_nota_fiscal(item_id: str, baixar: int = 0):
     )
 
 @app.delete("/notas-fiscais/{item_id}")
-def excluir_nota_fiscal(item_id: str):
+def excluir_nota_fiscal(item_id: str, sessao: dict = Depends(exigir_admin)):
     conn = conectar_db()
     row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
     if row and row["arquivo_nome"]:
@@ -1839,7 +1966,7 @@ def excluir_nota_fiscal(item_id: str):
     return {"status": "ok", "id": item_id}
 
 @app.post("/notas-fiscais/{item_id}/vincular")
-def vincular_nota_financeiro(item_id: str, payload: VincularFinanceiroPayload):
+def vincular_nota_financeiro(item_id: str, payload: VincularFinanceiroPayload, sessao: dict = Depends(exigir_admin)):
     """Mantido como wrapper fino sobre a lógica de /vinculos (usado pelo banner de
     sugestão automática do upload de notas) - preserva o formato de resposta antigo
     ({lancamento, item}) pra não quebrar o frontend existente. Um 409 de conflito
@@ -1859,14 +1986,14 @@ def vincular_nota_financeiro(item_id: str, payload: VincularFinanceiroPayload):
     return {"status": "ok", "lancamento": row_financeiro(lanc_atualizado), "item": row_nota_fiscal(nota_atualizada)}
 
 @app.get("/equipe")
-def listar_equipe():
+def listar_equipe(sessao: dict = Depends(obter_sessao)):
     conn = conectar_db()
     rows = conn.execute("SELECT * FROM equipe ORDER BY nome ASC").fetchall()
     conn.close()
     return {"status": "ok", "equipe": [row_equipe(r) for r in rows]}
 
 @app.post("/equipe")
-def salvar_equipe(payload: EquipePayload):
+def salvar_equipe(payload: EquipePayload, sessao: dict = Depends(exigir_admin)):
     item_id = payload.id or gerar_id()
     conn = conectar_db()
     conn.execute(
@@ -1880,7 +2007,7 @@ def salvar_equipe(payload: EquipePayload):
     return {"status": "ok", "colaborador": row_equipe(row)}
 
 @app.delete("/equipe/{item_id}")
-def excluir_equipe(item_id: str):
+def excluir_equipe(item_id: str, sessao: dict = Depends(exigir_admin)):
     conn = conectar_db()
     conn.execute("DELETE FROM equipe WHERE id = ?", (item_id,))
     conn.commit()
@@ -1888,7 +2015,7 @@ def excluir_equipe(item_id: str):
     return {"status": "ok", "id": item_id}
 
 @app.post("/backup")
-def criar_backup():
+def criar_backup(sessao: dict = Depends(exigir_admin)):
     try:
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         if not DB_PATH.exists():
@@ -1901,7 +2028,7 @@ def criar_backup():
         return {"status": "erro", "erro": str(e)}
 
 @app.get("/sistema-info")
-def sistema_info():
+def sistema_info(sessao: dict = Depends(exigir_admin)):
     return {
         "status": "ok",
         "data_dir": str(DATA_DIR),

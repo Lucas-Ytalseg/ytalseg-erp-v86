@@ -1,107 +1,55 @@
-import { useEffect, useState } from "react";
-
-type Perfil = "admin" | "operador" | "financeiro" | "consulta";
-type Usuario = { id: number | string; user: string; senha: string; perfil: Perfil; ativo: boolean; };
-
-const USUARIOS_KEY = "ytalseg_users_v33";
-const SESSAO_KEY = "ytalseg_user_v20";
-const AUTH_KEY = "ytalseg_auth";
-
-function usuariosPadrao(): Usuario[] {
-  return [
-    { id: 1, user: "admin", senha: "123", perfil: "admin", ativo: true },
-    { id: 2, user: "operador", senha: "123", perfil: "operador", ativo: true },
-    { id: 3, user: "financeiro", senha: "123", perfil: "financeiro", ativo: true },
-    { id: 4, user: "consulta", senha: "123", perfil: "consulta", ativo: true },
-  ];
-}
-
-function salvarUsuarios(lista: Usuario[]) {
-  localStorage.setItem(USUARIOS_KEY, JSON.stringify(lista));
-}
-
-function carregarUsuarios(): Usuario[] {
-  const padrao = usuariosPadrao();
-
-  try {
-    const raw = localStorage.getItem(USUARIOS_KEY);
-    const lista = raw ? JSON.parse(raw) : [];
-
-    if (Array.isArray(lista) && lista.length > 0) {
-      const normalizados: Usuario[] = lista.map((u: any, i: number) => ({
-        id: u.id ?? Date.now() + i,
-        user: String(u.user || u.nome || "").trim(),
-        senha: String(u.senha || ""),
-        perfil: (u.perfil || "consulta") as Perfil,
-        ativo: u.ativo !== false,
-      })).filter((u: Usuario) => u.user);
-
-      const temAdminValido = normalizados.some(
-        (u) => u.user.toLowerCase() === "admin" && u.senha === "123" && u.ativo !== false
-      );
-
-      if (!temAdminValido) {
-        const semAdminDuplicado = normalizados.filter((u) => u.user.toLowerCase() !== "admin");
-        const corrigidos = [padrao[0], ...semAdminDuplicado];
-        salvarUsuarios(corrigidos);
-        return corrigidos;
-      }
-
-      salvarUsuarios(normalizados);
-      return normalizados;
-    }
-  } catch {}
-
-  salvarUsuarios(padrao);
-  return padrao;
-}
+import { useState } from "react";
+import { login, recuperarAdmin, type Perfil } from "../services/auth";
 
 export default function LoginSistema({ onLogin }: { onLogin: (user: string, perfil: Perfil) => void }) {
   const [user, setUser] = useState("");
   const [senha, setSenha] = useState("");
   const [msg, setMsg] = useState("");
-  const [usuarios, setUsuarios] = useState<Usuario[]>([]);
+  const [entrando, setEntrando] = useState(false);
 
-  useEffect(() => {
-    setUsuarios(carregarUsuarios());
-  }, []);
+  const [modoRecuperacao, setModoRecuperacao] = useState(false);
+  const [recUsuario, setRecUsuario] = useState("");
+  const [recCodigo, setRecCodigo] = useState("");
+  const [recNovaSenha, setRecNovaSenha] = useState("");
+  const [recMsg, setRecMsg] = useState("");
+  const [recOk, setRecOk] = useState(false);
+  const [recEnviando, setRecEnviando] = useState(false);
 
-  function entrar() {
+  async function entrar() {
     const nome = user.trim().toLowerCase();
     const senhaDigitada = String(senha || "");
 
     if (!nome) return setMsg("Informe o usuário.");
     if (!senhaDigitada) return setMsg("Informe a senha.");
 
-    let lista = usuarios.length ? usuarios : carregarUsuarios();
-
-    let usuario = lista.find((u) =>
-      String(u.user || "").trim().toLowerCase() === nome &&
-      String(u.senha || "") === senhaDigitada &&
-      u.ativo !== false
-    );
-
-    // Segurança de recuperação: se a base antiga estiver bagunçada, admin/123 recria o admin.
-    if (!usuario && nome === "admin" && senhaDigitada === "123") {
-      const padrao = usuariosPadrao();
-      const semAdmin = lista.filter((u) => String(u.user || "").trim().toLowerCase() !== "admin");
-      lista = [padrao[0], ...semAdmin];
-      salvarUsuarios(lista);
-      setUsuarios(lista);
-      usuario = padrao[0];
+    setMsg("");
+    setEntrando(true);
+    try {
+      const sessao = await login(nome, senhaDigitada);
+      onLogin(sessao.usuario, sessao.perfil);
+    } catch (e: any) {
+      setMsg(e.message || "Usuário ou senha inválidos.");
+    } finally {
+      setEntrando(false);
     }
+  }
 
-    if (!usuario) return setMsg("Usuário/senha inválidos ou usuário inativo.");
+  async function recuperar() {
+    setRecMsg("");
+    if (!recUsuario.trim()) return setRecMsg("Informe o usuário admin.");
+    if (!recCodigo.trim()) return setRecMsg("Informe o código mestre.");
+    if (recNovaSenha.length < 8) return setRecMsg("A nova senha precisa ter pelo menos 8 caracteres.");
 
-    const payload = {
-      user: usuario.user,
-      perfil: usuario.perfil || "consulta",
-      loginEm: new Date().toISOString(),
-    };
-
-    localStorage.setItem(SESSAO_KEY, JSON.stringify(payload));
-    localStorage.setItem(AUTH_KEY, JSON.stringify(payload));
-    onLogin(usuario.user, usuario.perfil || "consulta");
+    setRecEnviando(true);
+    try {
+      await recuperarAdmin(recUsuario.trim().toLowerCase(), recCodigo.trim(), recNovaSenha);
+      setRecOk(true);
+      setRecMsg("Senha redefinida com sucesso. Você já pode entrar com a nova senha.");
+    } catch (e: any) {
+      setRecMsg(e.message || "Não foi possível recuperar o acesso.");
+    } finally {
+      setRecEnviando(false);
+    }
   }
 
   return (
@@ -118,7 +66,10 @@ export default function LoginSistema({ onLogin }: { onLogin: (user: string, perf
         .login-label { display:block; font-size:12px; font-weight:1000; color:#006b34; margin:12px 0 6px; text-transform:uppercase; }
         .login-input { width:100%; box-sizing:border-box; border:1px solid #d1d5db; border-radius:12px; padding:12px 14px; font-size:15px; font-weight:800; }
         .login-btn { width:100%; box-sizing:border-box; border:0; border-radius:12px; padding:12px 14px; font-size:15px; font-weight:1000; cursor:pointer; background:#00B050; color:white; margin-top:16px; }
+        .login-btn:disabled { opacity:.6; cursor:default; }
         .login-msg { margin-top:12px; color:#b91c1c; font-weight:900; }
+        .login-msg-ok { margin-top:12px; color:#006b34; font-weight:900; }
+        .login-link { display:block; text-align:center; margin-top:14px; background:none; border:0; color:#006b34; font-weight:900; font-size:13px; cursor:pointer; text-decoration:underline; }
       `}</style>
       <div className="login-card">
         <div className="login-logo-row">
@@ -129,30 +80,80 @@ export default function LoginSistema({ onLogin }: { onLogin: (user: string, perf
           </div>
         </div>
 
-        <div className="login-form-inner">
-          <label className="login-label">Usuário</label>
-          <input
-            className="login-input"
-            placeholder="Digite seu usuário"
-            value={user}
-            onChange={(e) => setUser(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") entrar(); }}
-            autoFocus
-          />
+        {!modoRecuperacao ? (
+          <div className="login-form-inner">
+            <label className="login-label">Usuário</label>
+            <input
+              className="login-input"
+              placeholder="Digite seu usuário"
+              value={user}
+              onChange={(e) => setUser(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") entrar(); }}
+              autoFocus
+            />
 
-          <label className="login-label">Senha</label>
-          <input
-            className="login-input"
-            type="password"
-            placeholder="Digite sua senha"
-            value={senha}
-            onChange={(e) => setSenha(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") entrar(); }}
-          />
+            <label className="login-label">Senha</label>
+            <input
+              className="login-input"
+              type="password"
+              placeholder="Digite sua senha"
+              value={senha}
+              onChange={(e) => setSenha(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") entrar(); }}
+            />
 
-          <button className="login-btn" onClick={entrar}>Entrar</button>
-          {msg && <div className="login-msg">{msg}</div>}
-        </div>
+            <button className="login-btn" onClick={entrar} disabled={entrando}>
+              {entrando ? "Entrando..." : "Entrar"}
+            </button>
+            {msg && <div className="login-msg">{msg}</div>}
+
+            <button
+              className="login-link"
+              onClick={() => { setModoRecuperacao(true); setMsg(""); setRecMsg(""); setRecOk(false); }}
+            >
+              Esqueci a senha do admin (código mestre)
+            </button>
+          </div>
+        ) : (
+          <div className="login-form-inner">
+            <label className="login-label">Usuário admin</label>
+            <input
+              className="login-input"
+              placeholder="ex: lucas"
+              value={recUsuario}
+              onChange={(e) => setRecUsuario(e.target.value)}
+            />
+
+            <label className="login-label">Código mestre</label>
+            <input
+              className="login-input"
+              placeholder="XXXXX-XXXXX-XXXXX"
+              value={recCodigo}
+              onChange={(e) => setRecCodigo(e.target.value)}
+            />
+
+            <label className="login-label">Nova senha</label>
+            <input
+              className="login-input"
+              type="password"
+              placeholder="mínimo 8 caracteres"
+              value={recNovaSenha}
+              onChange={(e) => setRecNovaSenha(e.target.value)}
+            />
+
+            <button className="login-btn" onClick={recuperar} disabled={recEnviando || recOk}>
+              {recEnviando ? "Enviando..." : "Redefinir senha"}
+            </button>
+            {recMsg && <div className={recOk ? "login-msg-ok" : "login-msg"}>{recMsg}</div>}
+
+            <button
+              className="login-link"
+              onClick={() => { setModoRecuperacao(false); setRecUsuario(""); setRecCodigo(""); setRecNovaSenha(""); setRecMsg(""); setRecOk(false); }}
+            >
+              Voltar para o login
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -10,6 +10,8 @@ import BancoLocal from "./modules/BancoLocal";
 import AuditoriaSistema from "./modules/AuditoriaSistema";
 import LoginSistema from "./modules/LoginSistema";
 import PermissoesSistema from "./modules/PermissoesSistema";
+import UsuariosSistema from "./modules/UsuariosSistema";
+import { logout, obterSessaoAtual, type Perfil } from "./services/auth";
 import BackupAutomatico from "./modules/BackupAutomatico";
 import Clientes from "./modules/Clientes";
 const Financeiro = React.lazy(() => import("./modules/Financeiro"));
@@ -19,48 +21,36 @@ import Configuracoes from "./modules/Configuracoes";
 import ConfiguracoesSistema from "./modules/ConfiguracoesSistema";
 const Cobranca = React.lazy(() => import("./modules/Cobranca"));
 
-type MenuKey = "dashboard" | "banco-local" | "auditoria" | "permissoes" | "backup" | "config-sistema" | "relatorios" | "clientes" | "financeiro" | "equipe" | "notafiscal" | "configuracoes" | "historico-pdfs" | "cobranca";
+type MenuKey = "dashboard" | "banco-local" | "auditoria" | "permissoes" | "usuarios" | "backup" | "config-sistema" | "relatorios" | "clientes" | "financeiro" | "equipe" | "notafiscal" | "configuracoes" | "historico-pdfs" | "cobranca";
 
 const VERDE = "#00B050";
 
-type PerfilUsuario = "admin" | "operador" | "financeiro" | "consulta";
+type PerfilUsuario = Perfil;
 
+const TODOS_OS_MODULOS: MenuKey[] = [
+  "dashboard",
+  "banco-local",
+  "auditoria",
+  "permissoes",
+  "config-sistema",
+  "relatorios",
+  "clientes",
+  "financeiro",
+  "equipe",
+  "notafiscal",
+  "configuracoes",
+  "historico-pdfs",
+  "backup",
+  "cobranca",
+];
+
+// Admin vê e edita tudo (inclusive gestão de usuários). Visualização vê os
+// mesmos módulos, só que sem escrita (o backend bloqueia escrita por perfil,
+// isso aqui só decide o que aparece no menu) - exceto "usuarios", que é
+// administração de acesso e fica restrita ao admin.
 const PERMISSOES_MENU: Record<PerfilUsuario, MenuKey[]> = {
-  admin: [
-    "dashboard",
-    "banco-local",
-    "auditoria",
-    "permissoes",
-    "config-sistema",
-    "relatorios",
-    "clientes",
-    "financeiro",
-    "equipe",
-    "notafiscal",
-    "configuracoes",
-    "historico-pdfs",
-    "backup",
-    "cobranca",
-  ],
-  operador: [
-    "dashboard",
-    "relatorios",
-    "clientes",
-    "historico-pdfs",
-  ],
-  financeiro: [
-    "dashboard",
-    "banco-local",
-    "auditoria",
-    "financeiro",
-    "notafiscal",
-    "historico-pdfs",
-    "cobranca",
-  ],
-  consulta: [
-    "dashboard",
-    "historico-pdfs",
-  ],
+  admin: [...TODOS_OS_MODULOS, "usuarios"],
+  visualizacao: TODOS_OS_MODULOS,
 };
 
 function Card({
@@ -96,19 +86,21 @@ export default function App() {
   const [menu, setMenu] = React.useState<MenuKey>("dashboard");
   const [grupoAbertoV52, setGrupoAbertoV52] = React.useState<string>("Principal");
 
+  const [verificandoSessao, setVerificandoSessao] = React.useState(true);
+
   React.useEffect(() => {
-    const data = localStorage.getItem("ytalseg_user_v20");
-    if (data) {
-      try {
-        const parsed = JSON.parse(data);
-        setUser(parsed.user || "");
-        setPerfil(parsed.perfil || "admin");
-      } catch {}
-    }
+    obterSessaoAtual()
+      .then((sessao) => {
+        if (sessao) {
+          setUser(sessao.usuario);
+          setPerfil(sessao.perfil);
+        }
+      })
+      .finally(() => setVerificandoSessao(false));
   }, []);
 
   function sair() {
-    localStorage.removeItem("ytalseg_user_v20");
+    logout();
     setUser("");
   }
 
@@ -117,6 +109,7 @@ export default function App() {
     { id: "banco-local", label: "Banco Local", icon: "🗄️" },
     { id: "auditoria", label: "Auditoria", icon: "🧾" },
     { id: "permissoes", label: "Permissões", icon: "🔐" },
+    { id: "usuarios", label: "Usuários", icon: "👤" },
     { id: "backup", label: "Backup", icon: "💾" },
     { id: "config-sistema", label: "Config Sistema", icon: "🛠️" },
     { id: "relatorios", label: "Relatórios", icon: "📄" },
@@ -147,7 +140,7 @@ export default function App() {
     {
       titulo: "Gestão",
       icone: "👥",
-      ids: ["clientes", "financeiro", "equipe", "notafiscal", "cobranca", "permissoes"],
+      ids: ["clientes", "financeiro", "equipe", "notafiscal", "cobranca", "permissoes", "usuarios"],
     },
     {
       titulo: "Dados e Segurança",
@@ -187,6 +180,14 @@ export default function App() {
       setGrupoAbertoV52(grupoAtual.titulo);
     }
   }, [menu]);
+
+  if (verificandoSessao) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Arial,sans-serif", fontWeight: 800, color: "#6b7280" }}>
+        Carregando…
+      </div>
+    );
+  }
 
   if (!user) {
     return (
@@ -622,6 +623,7 @@ export default function App() {
             {menu === "banco-local" && "Banco Local"}
             {menu === "auditoria" && "Auditoria do Sistema"}
             {menu === "permissoes" && "Permissões do Sistema"}
+            {menu === "usuarios" && "Usuários"}
             {menu === "backup" && "Backup Automático"}
             {menu === "config-sistema" && "Configurações do Sistema"}
             {menu === "relatorios" && "Relatórios de Horas"}
@@ -646,6 +648,7 @@ export default function App() {
           {menu === "banco-local" && <BancoLocal />}
           {menu === "auditoria" && <AuditoriaSistema />}
           {menu === "permissoes" && <PermissoesSistema />}
+          {menu === "usuarios" && <UsuariosSistema />}
           {menu === "backup" && <BackupAutomatico />}
           {menu === "config-sistema" && <ConfiguracoesSistema />}
 
