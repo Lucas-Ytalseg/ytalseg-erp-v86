@@ -15,9 +15,6 @@ import pytesseract
 from pydantic import BaseModel
 from typing import Optional, List
 import uuid
-from fastapi import Header
-import secrets
-import hashlib
 
 app = FastAPI(title="YTALSEG Backend", version="8.0.0 PROFISSIONAL")
 
@@ -618,39 +615,6 @@ def conectar_db():
     conn.row_factory = sqlite3.Row
     return conn
 
-# ===== AUTENTICACAO: hash de senha, salt e token de sessao =====
-# PBKDF2-HMAC-SHA256 (stdlib, sem dependencia nova) com salt por usuario.
-_PBKDF2_ITERACOES = 260_000
-
-def gerar_salt() -> str:
-    return secrets.token_hex(16)
-
-def hash_senha(senha: str, salt: str) -> str:
-    return hashlib.pbkdf2_hmac(
-        "sha256", senha.encode("utf-8"), salt.encode("utf-8"), _PBKDF2_ITERACOES
-    ).hex()
-
-def verificar_senha(senha: str, salt: str, hash_armazenado: str) -> bool:
-    return secrets.compare_digest(hash_senha(senha, salt), hash_armazenado)
-
-def criar_token() -> str:
-    return secrets.token_hex(32)
-
-# Alfabeto sem caracteres ambiguos (sem 0/O, 1/I/L) pra facilitar anotar a mao.
-_ALFABETO_CODIGO_MESTRE = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-
-def gerar_codigo_mestre_legivel() -> str:
-    grupos = ["".join(secrets.choice(_ALFABETO_CODIGO_MESTRE) for _ in range(5)) for _ in range(3)]
-    return "-".join(grupos)
-
-def extrair_token(authorization: Optional[str]) -> Optional[str]:
-    if not authorization:
-        return None
-    partes = authorization.split(" ", 1)
-    if len(partes) == 2 and partes[0].lower() == "bearer":
-        return partes[1].strip()
-    return authorization.strip()
-
 def init_db():
     conn = conectar_db()
     cur = conn.cursor()
@@ -722,39 +686,6 @@ def init_db():
             origem TEXT NOT NULL DEFAULT 'manual'
         )
     """)
-    # ===== AUTENTICACAO: usuarios, sessoes e codigos mestre de recuperacao =====
-    # Aditivo - o login antigo (frontend) continua funcionando normalmente
-    # ate a Etapa 6, quando for migrado de vez.
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS usuarios (
-            id TEXT PRIMARY KEY,
-            usuario TEXT NOT NULL UNIQUE,
-            senha_hash TEXT NOT NULL,
-            salt TEXT NOT NULL,
-            perfil TEXT NOT NULL DEFAULT 'visualizacao',
-            ativo INTEGER NOT NULL DEFAULT 1,
-            criado_em TEXT NOT NULL
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS sessoes (
-            token TEXT PRIMARY KEY,
-            usuario TEXT NOT NULL,
-            perfil TEXT NOT NULL,
-            criado_em TEXT NOT NULL
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS recuperacao_mestre (
-            id TEXT PRIMARY KEY,
-            codigo_hash TEXT NOT NULL,
-            salt TEXT NOT NULL,
-            usado INTEGER NOT NULL DEFAULT 0,
-            criado_em TEXT NOT NULL,
-            usado_em TEXT DEFAULT ''
-        )
-    """)
-
     cur.execute("CREATE INDEX IF NOT EXISTS idx_vinculos_lancamento ON vinculos(lancamento_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_vinculos_nota ON vinculos(nota_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_vinculos_historico ON vinculos(historico_id)")
@@ -870,139 +801,9 @@ def init_db():
             (str(uuid.uuid4()), nota_row["financeiro_id"], nota_row["id"], agora, agora),
         )
     conn.commit()
-
-    # ===== SEMEADURA: cria o admin "lucas" so na primeira vez (tabela usuarios vazia) =====
-    total_usuarios = cur.execute("SELECT COUNT(*) AS n FROM usuarios").fetchone()["n"]
-    if total_usuarios == 0:
-        senha_gerada = secrets.token_urlsafe(12)
-        salt = gerar_salt()
-        cur.execute(
-            "INSERT INTO usuarios (id, usuario, senha_hash, salt, perfil, ativo, criado_em) "
-            "VALUES (?, ?, ?, ?, ?, 1, ?)",
-            (str(uuid.uuid4()), "lucas", hash_senha(senha_gerada, salt), salt, "admin", datetime.now().isoformat()),
-        )
-        conn.commit()
-        print("=" * 60)
-        print("ADMIN CRIADO (anote agora, isso so aparece uma vez):")
-        print("  usuario: lucas")
-        print(f"  senha:   {senha_gerada}")
-        print("=" * 60)
-
-    # ===== SEMEADURA: gera os codigos mestre de recuperacao do admin (so na primeira vez) =====
-    total_codigos = cur.execute("SELECT COUNT(*) AS n FROM recuperacao_mestre").fetchone()["n"]
-    if total_codigos == 0:
-        codigos_gerados = [gerar_codigo_mestre_legivel() for _ in range(8)]
-        agora_codigo = datetime.now().isoformat()
-        for codigo in codigos_gerados:
-            salt_codigo = gerar_salt()
-            cur.execute(
-                "INSERT INTO recuperacao_mestre (id, codigo_hash, salt, usado, criado_em, usado_em) "
-                "VALUES (?, ?, ?, 0, ?, '')",
-                (str(uuid.uuid4()), hash_senha(codigo, salt_codigo), salt_codigo, agora_codigo),
-            )
-        conn.commit()
-        print("=" * 60)
-        print("CODIGOS MESTRE DE RECUPERACAO DO ADMIN (anote AGORA, cada um so pode ser usado UMA vez,")
-        print("isso so aparece nesse startup - guarde num lugar seguro, fora do git):")
-        for codigo in codigos_gerados:
-            print(f"  {codigo}")
-        print("=" * 60)
-
     conn.close()
 
 init_db()
-
-# ===== ROTAS DE AUTENTICACAO (novas, nao substituem o login antigo ainda) =====
-class LoginPayload(BaseModel):
-    usuario: str
-    senha: str
-
-@app.post("/auth/login")
-def auth_login(payload: LoginPayload):
-    conn = conectar_db()
-    cur = conn.cursor()
-    linha = cur.execute(
-        "SELECT * FROM usuarios WHERE usuario = ? AND ativo = 1", (payload.usuario,)
-    ).fetchone()
-    if not linha or not verificar_senha(payload.senha, linha["salt"], linha["senha_hash"]):
-        conn.close()
-        raise HTTPException(status_code=401, detail="Usuario ou senha invalidos")
-
-    token = criar_token()
-    cur.execute(
-        "INSERT INTO sessoes (token, usuario, perfil, criado_em) VALUES (?, ?, ?, ?)",
-        (token, linha["usuario"], linha["perfil"], datetime.now().isoformat()),
-    )
-    conn.commit()
-    conn.close()
-    return {"token": token, "usuario": linha["usuario"], "perfil": linha["perfil"]}
-
-@app.post("/auth/logout")
-def auth_logout(authorization: Optional[str] = Header(None)):
-    token = extrair_token(authorization)
-    if token:
-        conn = conectar_db()
-        conn.execute("DELETE FROM sessoes WHERE token = ?", (token,))
-        conn.commit()
-        conn.close()
-    return {"ok": True}
-
-@app.get("/auth/me")
-def auth_me(authorization: Optional[str] = Header(None)):
-    token = extrair_token(authorization)
-    if not token:
-        raise HTTPException(status_code=401, detail="Nao autenticado")
-    conn = conectar_db()
-    linha = conn.execute(
-        "SELECT usuario, perfil FROM sessoes WHERE token = ?", (token,)
-    ).fetchone()
-    conn.close()
-    if not linha:
-        raise HTTPException(status_code=401, detail="Sessao invalida ou expirada")
-    return {"usuario": linha["usuario"], "perfil": linha["perfil"]}
-
-class RecuperarAdminPayload(BaseModel):
-    usuario: str
-    codigo_mestre: str
-    nova_senha: str
-
-@app.post("/auth/recuperar-admin")
-def auth_recuperar_admin(payload: RecuperarAdminPayload):
-    if len(payload.nova_senha) < 8:
-        raise HTTPException(status_code=400, detail="A nova senha precisa ter pelo menos 8 caracteres")
-
-    conn = conectar_db()
-    cur = conn.cursor()
-    admin_row = cur.execute(
-        "SELECT * FROM usuarios WHERE usuario = ? AND perfil = 'admin' AND ativo = 1",
-        (payload.usuario,),
-    ).fetchone()
-    if not admin_row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Usuario admin nao encontrado")
-
-    codigo_valido = None
-    for linha_codigo in cur.execute("SELECT * FROM recuperacao_mestre WHERE usado = 0").fetchall():
-        if verificar_senha(payload.codigo_mestre.strip(), linha_codigo["salt"], linha_codigo["codigo_hash"]):
-            codigo_valido = linha_codigo
-            break
-    if not codigo_valido:
-        conn.close()
-        raise HTTPException(status_code=401, detail="Codigo mestre invalido ou ja usado")
-
-    novo_salt = gerar_salt()
-    cur.execute(
-        "UPDATE usuarios SET senha_hash = ?, salt = ? WHERE id = ?",
-        (hash_senha(payload.nova_senha, novo_salt), novo_salt, admin_row["id"]),
-    )
-    cur.execute(
-        "UPDATE recuperacao_mestre SET usado = 1, usado_em = ? WHERE id = ?",
-        (datetime.now().isoformat(), codigo_valido["id"]),
-    )
-    cur.execute("DELETE FROM sessoes WHERE usuario = ?", (admin_row["usuario"],))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
 
 class FinanceiroPayload(BaseModel):
     id: Optional[str] = None
