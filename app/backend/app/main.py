@@ -597,9 +597,12 @@ def montar_dashboard_financeiro():
 
     # Notas já recebidas mas sem vínculo formal na tabela `vinculos` (ex.: vínculo nunca
     # foi confirmado na tela) - sem isso, o lançamento correspondente ficaria pra sempre
-    # na lista de "pendente de nota" mesmo já tendo nota emitida E recebida. Mesmo critério
-    # de match usado nas sugestões de vínculo (_buscar_candidatos): cliente substring nos
-    # dois sentidos + valor ±R$0,01.
+    # na lista de "pendente de nota" mesmo já tendo nota emitida E recebida. Cobre também
+    # o caso de lançamento já com status='recebido' (baixa dada direto no Financeiro) ou
+    # com nota_enviada=1 (campo legado gravável direto no lançamento, de antes do sistema
+    # de vínculo existir - ainda usado pela tela do Financeiro). Mesmo critério de match
+    # usado nas sugestões de vínculo (_buscar_candidatos): cliente substring nos dois
+    # sentidos + valor ±R$0,01.
     ids_notas_ja_vinculadas = {v["nota_id"] for v in vinculos_rows if v["nota_id"]}
     notas_recebidas_sem_vinculo = [
         n for n in notas if n["data_recebimento"] and n["id"] not in ids_notas_ja_vinculadas
@@ -615,6 +618,8 @@ def montar_dashboard_financeiro():
         row_financeiro(f) for f in financeiro_rows
         if f["id"] not in financeiro_usados
         and (f["status"] or "") != "nota_cancelada"
+        and (f["status"] or "") != "recebido"
+        and not f["nota_enviada"]
         and not _tem_nota_recebida_correspondente(f)
     ]
 
