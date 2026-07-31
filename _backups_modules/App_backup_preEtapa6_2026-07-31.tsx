@@ -9,6 +9,7 @@ const Dashboard = React.lazy(() => import("./modules/Dashboard"));
 import BancoLocal from "./modules/BancoLocal";
 import AuditoriaSistema from "./modules/AuditoriaSistema";
 import LoginSistema from "./modules/LoginSistema";
+import PermissoesSistema from "./modules/PermissoesSistema";
 import UsuariosSistema from "./modules/UsuariosSistema";
 import { logout, obterSessaoAtual, type Perfil } from "./services/auth";
 import BackupAutomatico from "./modules/BackupAutomatico";
@@ -20,7 +21,7 @@ import Configuracoes from "./modules/Configuracoes";
 import ConfiguracoesSistema from "./modules/ConfiguracoesSistema";
 const Cobranca = React.lazy(() => import("./modules/Cobranca"));
 
-type MenuKey = "dashboard" | "banco-local" | "auditoria" | "usuarios" | "backup" | "config-sistema" | "relatorios" | "clientes" | "financeiro" | "equipe" | "notafiscal" | "configuracoes" | "historico-pdfs" | "cobranca";
+type MenuKey = "dashboard" | "banco-local" | "auditoria" | "permissoes" | "usuarios" | "backup" | "config-sistema" | "relatorios" | "clientes" | "financeiro" | "equipe" | "notafiscal" | "configuracoes" | "historico-pdfs" | "cobranca";
 
 const VERDE = "#00B050";
 
@@ -30,6 +31,7 @@ const TODOS_OS_MODULOS: MenuKey[] = [
   "dashboard",
   "banco-local",
   "auditoria",
+  "permissoes",
   "config-sistema",
   "relatorios",
   "clientes",
@@ -106,6 +108,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icon: "📊" },
     { id: "banco-local", label: "Banco Local", icon: "🗄️" },
     { id: "auditoria", label: "Auditoria", icon: "🧾" },
+    { id: "permissoes", label: "Permissões", icon: "🔐" },
     { id: "usuarios", label: "Usuários", icon: "👤" },
     { id: "backup", label: "Backup", icon: "💾" },
     { id: "config-sistema", label: "Config Sistema", icon: "🛠️" },
@@ -137,7 +140,7 @@ export default function App() {
     {
       titulo: "Gestão",
       icone: "👥",
-      ids: ["clientes", "financeiro", "equipe", "notafiscal", "cobranca", "usuarios"],
+      ids: ["clientes", "financeiro", "equipe", "notafiscal", "cobranca", "permissoes", "usuarios"],
     },
     {
       titulo: "Dados e Segurança",
@@ -619,6 +622,7 @@ export default function App() {
             {menu === "dashboard" && "Dashboard Geral"}
             {menu === "banco-local" && "Banco Local"}
             {menu === "auditoria" && "Auditoria do Sistema"}
+            {menu === "permissoes" && "Permissões do Sistema"}
             {menu === "usuarios" && "Usuários"}
             {menu === "backup" && "Backup Automático"}
             {menu === "config-sistema" && "Configurações do Sistema"}
@@ -643,6 +647,7 @@ export default function App() {
           {menu === "dashboard" && <Dashboard />}
           {menu === "banco-local" && <BancoLocal />}
           {menu === "auditoria" && <AuditoriaSistema />}
+          {menu === "permissoes" && <PermissoesSistema />}
           {menu === "usuarios" && <UsuariosSistema />}
           {menu === "backup" && <BackupAutomatico />}
           {menu === "config-sistema" && <ConfiguracoesSistema />}
