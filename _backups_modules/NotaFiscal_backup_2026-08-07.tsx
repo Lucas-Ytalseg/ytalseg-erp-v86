@@ -120,9 +120,6 @@ export default function NotaFiscal() {
   const [historicoPdfs, setHistoricoPdfs] = useState<DocResumo[]>([]);
   const [vinculosFinanceiro, setVinculosFinanceiro] = useState<Record<string, VinculoInfo>>({});
   const [carregandoArquivo, setCarregandoArquivo] = useState<string | null>(null);
-  const [pickerVinculo, setPickerVinculo] = useState<{ lancId: string; tipo: "nota" | "relatorio" } | null>(null);
-  const [candidatosVinculo, setCandidatosVinculo] = useState<any[]>([]);
-  const [vinculando, setVinculando] = useState(false);
   // NotasFiscaisEmitidas é renderizado logo abaixo, na mesma página, mas busca seus
   // próprios dados de forma independente - esse contador avisa o filho toda vez que
   // este componente recarrega os dados (por mutação própria ou clique em Atualizar),
@@ -295,58 +292,6 @@ ${form.descricao}
 
   function abrirPortal() {
     window.open("https://nfe.prefeitura.sp.gov.br/", "_blank");
-  }
-
-  async function abrirVincular(lancId: string, tipo: "nota" | "relatorio") {
-    if (pickerVinculo?.lancId === lancId && pickerVinculo?.tipo === tipo) {
-      setPickerVinculo(null);
-      return;
-    }
-    setPickerVinculo({ lancId, tipo });
-    setCandidatosVinculo([]);
-    setErro("");
-    try {
-      const res = await fetch(`${API_BASE}/vinculos/sugestoes?tipo=financeiro&id=${lancId}`);
-      const data = await res.json();
-      let candidatos = data.status === "ok" ? (tipo === "nota" ? data.candidatosNota : data.candidatosHistorico) || [] : [];
-      if (candidatos.length === 0) {
-        // Sem sugestão automática (cliente/valor não bateram) - mostra a lista completa,
-        // o backend recusa com mensagem clara se o item escolhido já estiver vinculado.
-        const resTudo = await fetch(tipo === "nota" ? `${API_BASE}/notas-fiscais` : `${API_BASE}/historico-pdfs`);
-        const dataTudo = await resTudo.json();
-        candidatos = tipo === "nota" ? dataTudo.notas || [] : dataTudo.historico || [];
-      }
-      setCandidatosVinculo(candidatos);
-    } catch (err) {
-      setErro(`Não consegui buscar as opções pra vincular: ${err}`);
-    }
-  }
-
-  async function confirmarVincular(lancId: string, tipo: "nota" | "relatorio", idEscolhido: string) {
-    setVinculando(true);
-    setErro("");
-    try {
-      const body =
-        tipo === "nota"
-          ? { lancamentoId: lancId, notaId: idEscolhido, origem: "manual" }
-          : { lancamentoId: lancId, historicoId: idEscolhido, origem: "manual" };
-      const res = await fetch(`${API_BASE}/vinculos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (res.status === 409 || data.status !== "ok") {
-        setErro(data.erro || "Não foi possível vincular.");
-        return;
-      }
-      setPickerVinculo(null);
-      await carregar();
-    } catch (err) {
-      setErro(`Erro ao vincular: ${err}`);
-    } finally {
-      setVinculando(false);
-    }
   }
 
   async function verArquivo(tipo: "nota" | "relatorio", id: string) {
@@ -574,16 +519,6 @@ ${form.descricao}
                           {carregandoArquivo === `relatorio-${historico.id}` ? "Abrindo..." : "Ver relatório"}
                         </button>
                       )}
-                      {!nota?.temArquivo && (
-                        <button className="btn-gray" onClick={() => abrirVincular(l.id, "nota")}>
-                          {pickerVinculo?.lancId === l.id && pickerVinculo.tipo === "nota" ? "Fechar" : "Vincular nota"}
-                        </button>
-                      )}
-                      {!historico?.temArquivo && (
-                        <button className="btn-gray" onClick={() => abrirVincular(l.id, "relatorio")}>
-                          {pickerVinculo?.lancId === l.id && pickerVinculo.tipo === "relatorio" ? "Fechar" : "Vincular relatório"}
-                        </button>
-                      )}
                       <button className="btn-gray" onClick={() => abrirDetalhe(l)}>{temDocumento ? "Ver detalhes" : "Visualizar"}</button>
                       <button
                         className="btn-gray"
@@ -594,32 +529,6 @@ ${form.descricao}
                       </button>
                       <button className="btn-gray" onClick={() => excluirLancamento(l.id)}>Excluir</button>
                     </div>
-                    {pickerVinculo?.lancId === l.id && (
-                      <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                        <select
-                          defaultValue=""
-                          disabled={vinculando}
-                          onChange={(e) => e.target.value && confirmarVincular(l.id, pickerVinculo.tipo, e.target.value)}
-                          style={{ border: "1px solid #d1d5db", borderRadius: 8, padding: 8, fontSize: 12, fontWeight: 700, maxWidth: 320 }}
-                        >
-                          <option value="">
-                            {candidatosVinculo.length === 0
-                              ? "Buscando..."
-                              : pickerVinculo.tipo === "nota"
-                              ? "Escolher nota fiscal..."
-                              : "Escolher relatório..."}
-                          </option>
-                          {candidatosVinculo.map((c: any) => (
-                            <option key={c.id} value={c.id}>
-                              {pickerVinculo.tipo === "nota"
-                                ? `${c.numeroNota || "s/ número"} — ${c.cliente || "-"} — ${brl(c.valor)}`
-                                : `${c.cliente || "-"} — ${c.referencia || "-"} — ${brl(c.valor)}`}
-                            </option>
-                          ))}
-                        </select>
-                        <button className="btn-gray" onClick={() => setPickerVinculo(null)}>Cancelar</button>
-                      </div>
-                    )}
                   </td>
                 </tr>
               );
