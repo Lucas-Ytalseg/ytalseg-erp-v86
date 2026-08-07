@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ConflitoVinculoDialog, { ConflitoInfo } from "./shared/ConflitoVinculoDialog";
-import { abrirArquivoAutenticado, baixarArquivoAutenticado } from "../services/auth";
 
 const API_BASE = "/api";
 const TAMANHO_MAXIMO = 15 * 1024 * 1024;
@@ -193,7 +192,6 @@ export default function NotasFiscaisEmitidas({
   const [marcandoLote, setMarcandoLote] = useState(false);
   const [conflito, setConflito] = useState<(ConflitoInfo & { _origem: { item: NotaFiscalItem; financeiroId: string; isPendente: boolean } }) | null>(null);
   const [vinculandoId, setVinculandoId] = useState<string | null>(null);
-  const [carregandoArquivo, setCarregandoArquivo] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function carregar() {
@@ -449,33 +447,8 @@ export default function NotasFiscaisEmitidas({
     setPendentes((prev) => prev.map((p) => (p.id === id ? { ...p, sugestaoFinanceiroId: null } : p)));
   }
 
-  async function visualizar(item: NotaFiscalItem) {
-    const chave = `ver-${item.id}`;
-    setCarregandoArquivo(chave);
-    setMsg("");
-    try {
-      await abrirArquivoAutenticado(`${API_BASE}/notas-fiscais/${item.id}/arquivo`);
-    } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Erro ao abrir o arquivo.");
-    } finally {
-      setCarregandoArquivo(null);
-    }
-  }
-
-  async function baixar(item: NotaFiscalItem) {
-    const chave = `baixar-${item.id}`;
-    setCarregandoArquivo(chave);
-    setMsg("");
-    try {
-      await baixarArquivoAutenticado(
-        `${API_BASE}/notas-fiscais/${item.id}/arquivo?baixar=1`,
-        item.arquivoNomeOriginal || `nota-${item.numeroNota || item.id}.pdf`
-      );
-    } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Erro ao baixar o arquivo.");
-    } finally {
-      setCarregandoArquivo(null);
-    }
+  function visualizar(item: NotaFiscalItem) {
+    window.open(`${API_BASE}/notas-fiscais/${item.id}/arquivo`, "_blank");
   }
 
   async function excluir(item: NotaFiscalItem) {
@@ -844,12 +817,10 @@ export default function NotasFiscaisEmitidas({
           <div className="nfe-actions">
             {item.temArquivo && (
               <>
-                <button className="nfe-btn" onClick={() => visualizar(item)} disabled={carregandoArquivo === `ver-${item.id}`}>
-                  {carregandoArquivo === `ver-${item.id}` ? "Abrindo..." : "Visualizar"}
-                </button>
-                <button className="nfe-btn" onClick={() => baixar(item)} disabled={carregandoArquivo === `baixar-${item.id}`}>
-                  {carregandoArquivo === `baixar-${item.id}` ? "Baixando..." : "Baixar"}
-                </button>
+                <button className="nfe-btn" onClick={() => visualizar(item)}>Visualizar</button>
+                <a className="nfe-btn" href={`${API_BASE}/notas-fiscais/${item.id}/arquivo?baixar=1`} target="_blank" rel="noreferrer">
+                  Baixar
+                </a>
               </>
             )}
             <button className="nfe-btn" onClick={() => setEditando(item)}>Editar</button>

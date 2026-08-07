@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
 import NotasFiscaisEmitidas from "./NotasFiscaisEmitidas";
-import { abrirArquivoAutenticado } from "../services/auth";
 
 const API_BASE = "/api";
 
@@ -119,7 +118,6 @@ export default function NotaFiscal() {
   const [notasPainel, setNotasPainel] = useState<DocResumo[]>([]);
   const [historicoPdfs, setHistoricoPdfs] = useState<DocResumo[]>([]);
   const [vinculosFinanceiro, setVinculosFinanceiro] = useState<Record<string, VinculoInfo>>({});
-  const [carregandoArquivo, setCarregandoArquivo] = useState<string | null>(null);
   // NotasFiscaisEmitidas é renderizado logo abaixo, na mesma página, mas busca seus
   // próprios dados de forma independente - esse contador avisa o filho toda vez que
   // este componente recarrega os dados (por mutação própria ou clique em Atualizar),
@@ -292,20 +290,6 @@ ${form.descricao}
 
   function abrirPortal() {
     window.open("https://nfe.prefeitura.sp.gov.br/", "_blank");
-  }
-
-  async function verArquivo(tipo: "nota" | "relatorio", id: string) {
-    const chave = `${tipo}-${id}`;
-    setCarregandoArquivo(chave);
-    setErro("");
-    try {
-      const url = tipo === "nota" ? `${API_BASE}/notas-fiscais/${id}/arquivo` : `${API_BASE}/historico-pdfs/${id}/arquivo`;
-      await abrirArquivoAutenticado(url);
-    } catch (err) {
-      setErro(err instanceof Error ? err.message : "Erro ao abrir o arquivo.");
-    } finally {
-      setCarregandoArquivo(null);
-    }
   }
 
   return (
@@ -510,14 +494,10 @@ ${form.descricao}
                   <td>
                     <div className="actions">
                       {nota?.temArquivo && (
-                        <button className="btn-gray" onClick={() => verArquivo("nota", nota.id)} disabled={carregandoArquivo === `nota-${nota.id}`}>
-                          {carregandoArquivo === `nota-${nota.id}` ? "Abrindo..." : "Ver nota"}
-                        </button>
+                        <a className="btn-gray" href={`${API_BASE}/notas-fiscais/${nota.id}/arquivo`} target="_blank" rel="noreferrer">Ver nota</a>
                       )}
                       {historico?.temArquivo && (
-                        <button className="btn-gray" onClick={() => verArquivo("relatorio", historico.id)} disabled={carregandoArquivo === `relatorio-${historico.id}`}>
-                          {carregandoArquivo === `relatorio-${historico.id}` ? "Abrindo..." : "Ver relatório"}
-                        </button>
+                        <a className="btn-gray" href={`${API_BASE}/historico-pdfs/${historico.id}/arquivo`} target="_blank" rel="noreferrer">Ver relatório</a>
                       )}
                       <button className="btn-gray" onClick={() => abrirDetalhe(l)}>{temDocumento ? "Ver detalhes" : "Visualizar"}</button>
                       <button

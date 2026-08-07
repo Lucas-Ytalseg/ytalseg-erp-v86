@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { abrirArquivoAutenticado, baixarArquivoAutenticado } from "../services/auth";
 
 const API_BASE = "/api";
 const CHAVE_REABRIR = "ytalseg_reabrir_relatorio_pendente";
@@ -106,7 +105,6 @@ export default function HistoricoPDFs({ onAbrirRelatorio }: { onAbrirRelatorio?:
   const [enviando, setEnviando] = useState(false);
   const [pendentes, setPendentes] = useState<HistoricoItem[]>([]);
   const [editando, setEditando] = useState<HistoricoItem | null>(null);
-  const [carregandoArquivo, setCarregandoArquivo] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function carregar() {
@@ -249,33 +247,8 @@ export default function HistoricoPDFs({ onAbrirRelatorio }: { onAbrirRelatorio?:
     }
   }
 
-  async function visualizar(item: HistoricoItem) {
-    const chave = `ver-${item.id}`;
-    setCarregandoArquivo(chave);
-    setMsg("");
-    try {
-      await abrirArquivoAutenticado(`${API_BASE}/historico-pdfs/${item.id}/arquivo`);
-    } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Erro ao abrir o arquivo.");
-    } finally {
-      setCarregandoArquivo(null);
-    }
-  }
-
-  async function baixar(item: HistoricoItem) {
-    const chave = `baixar-${item.id}`;
-    setCarregandoArquivo(chave);
-    setMsg("");
-    try {
-      await baixarArquivoAutenticado(
-        `${API_BASE}/historico-pdfs/${item.id}/arquivo?baixar=1`,
-        item.arquivoNomeOriginal || `relatorio-${item.id}.pdf`
-      );
-    } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Erro ao baixar o arquivo.");
-    } finally {
-      setCarregandoArquivo(null);
-    }
+  function visualizar(item: HistoricoItem) {
+    window.open(`${API_BASE}/historico-pdfs/${item.id}/arquivo`, "_blank");
   }
 
   async function reabrir(item: HistoricoItem) {
@@ -469,12 +442,10 @@ export default function HistoricoPDFs({ onAbrirRelatorio }: { onAbrirRelatorio?:
                     )}
                     {item.temArquivo && (
                       <>
-                        <button className="hist-btn" onClick={() => visualizar(item)} disabled={carregandoArquivo === `ver-${item.id}`}>
-                          {carregandoArquivo === `ver-${item.id}` ? "Abrindo..." : "Visualizar"}
-                        </button>
-                        <button className="hist-btn" onClick={() => baixar(item)} disabled={carregandoArquivo === `baixar-${item.id}`}>
-                          {carregandoArquivo === `baixar-${item.id}` ? "Baixando..." : "Baixar"}
-                        </button>
+                        <button className="hist-btn" onClick={() => visualizar(item)}>Visualizar</button>
+                        <a className="hist-btn" href={`${API_BASE}/historico-pdfs/${item.id}/arquivo?baixar=1`} target="_blank" rel="noreferrer">
+                          Baixar
+                        </a>
                       </>
                     )}
                     {item.origem === "importado" && (
