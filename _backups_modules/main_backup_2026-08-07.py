@@ -554,15 +554,6 @@ def _desvincular(conn, vinculo_row):
         )
 
 def _cascade_excluir_vinculos_de(conn, lancamento_id: Optional[str] = None, nota_id: Optional[str] = None, historico_id: Optional[str] = None):
-    """Quando um lançamento, nota ou histórico é excluído de verdade, limpa só o
-    lado correspondente da linha de `vinculos` que o referenciava - os outros dois
-    lados do MESMO vínculo continuam vinculados (ex.: excluir o relatório vinculado
-    não pode derrubar o vínculo nota<->lançamento que estava na mesma linha). Só
-    apaga a linha inteira quando sobra menos de dois lados preenchidos (um vínculo
-    com um lado só não liga nada, igual à regra de criação em _criar_vinculo_core).
-    Antes desta correção,
-    _desvincular() apagava a linha inteira em qualquer cascata, perdendo os outros
-    vínculos junto (bug V14.1 - relatório vinculado sumia junto com a nota)."""
     condicoes, params = [], []
     if lancamento_id:
         condicoes.append("lancamento_id = ?")
@@ -576,35 +567,8 @@ def _cascade_excluir_vinculos_de(conn, lancamento_id: Optional[str] = None, nota
     if not condicoes:
         return
     rows = conn.execute(f"SELECT * FROM vinculos WHERE {' OR '.join(condicoes)}", params).fetchall()
-    agora = datetime.now().isoformat()
     for row in rows:
-        rompe_lancamento = bool(lancamento_id and row["lancamento_id"] == lancamento_id)
-        rompe_nota = bool(nota_id and row["nota_id"] == nota_id)
-        rompe_historico = bool(historico_id and row["historico_id"] == historico_id)
-
-        # Efeitos-espelho (nota_enviada/nota/data_envio_nota no financeiro,
-        # financeiro_id na nota) só fazem sentido quando o ELO lançamento<->nota
-        # está de fato sendo desfeito - excluir só o relatório vinculado não mexe
-        # nisso.
-        if (rompe_lancamento or rompe_nota) and row["lancamento_id"] and row["nota_id"]:
-            conn.execute("UPDATE notas_fiscais SET financeiro_id = '' WHERE id = ?", (row["nota_id"],))
-            conn.execute(
-                "UPDATE financeiro SET nota_enviada = 0, nota = '', data_envio_nota = '' WHERE id = ?",
-                (row["lancamento_id"],),
-            )
-
-        novo_lancamento = None if rompe_lancamento else row["lancamento_id"]
-        novo_nota = None if rompe_nota else row["nota_id"]
-        novo_historico = None if rompe_historico else row["historico_id"]
-        lados_restantes = sum(1 for x in (novo_lancamento, novo_nota, novo_historico) if x)
-
-        if lados_restantes < 2:
-            conn.execute("DELETE FROM vinculos WHERE id = ?", (row["id"],))
-        else:
-            conn.execute(
-                "UPDATE vinculos SET lancamento_id=?, nota_id=?, historico_id=?, atualizado_em=? WHERE id=?",
-                (novo_lancamento, novo_nota, novo_historico, agora, row["id"]),
-            )
+        _desvincular(conn, row)
 
 def montar_dashboard_financeiro():
     """Monta os dados que alimentam o Dashboard (aba Principal). A partir da v87, o
@@ -1654,28 +1618,18 @@ def salvar_financeiro(payload: FinanceiroPayload, sessao: dict = Depends(exigir_
     if vinculo:
         _propagar_status_vinculo(conn, vinculo, origem="financeiro")
 
-    # Tarefa "Pendentes de vínculo": se um historicoId foi informado e ele ainda não
-    # estiver vinculado a nada, cria/completa o vínculo lançamento+histórico agora.
-    # Se este lançamento já tiver um vínculo (ex.: já vinculado a uma nota fiscal),
-    # ACRESCENTA o histórico na MESMA linha em vez de pular em silêncio - antes desta
-    # correção, esse caso era ignorado sem erro nenhum e o relatório nunca aparecia
-    # vinculado na tela de Nota Fiscal (bug V14.1).
+    # Tarefa "Pendentes de vínculo": se um historicoId foi informado e nem ele nem este
+    # lançamento já estiverem vinculados, cria o vínculo lançamento+histórico agora.
     if payload.historicoId:
         ja_vinculado_hist = conn.execute("SELECT 1 FROM vinculos WHERE historico_id = ?", (payload.historicoId,)).fetchone()
-        if not ja_vinculado_hist:
+        ja_vinculado_lanc = conn.execute("SELECT 1 FROM vinculos WHERE lancamento_id = ?", (item_id,)).fetchone()
+        if not ja_vinculado_hist and not ja_vinculado_lanc:
             agora = datetime.now().isoformat()
-            if vinculo:
-                if not vinculo["historico_id"]:
-                    conn.execute(
-                        "UPDATE vinculos SET historico_id = ?, atualizado_em = ? WHERE id = ?",
-                        (payload.historicoId, agora, vinculo["id"]),
-                    )
-            else:
-                conn.execute(
-                    "INSERT INTO vinculos (id, lancamento_id, nota_id, historico_id, criado_em, atualizado_em, origem) "
-                    "VALUES (?, ?, NULL, ?, ?, ?, 'importado-historico')",
-                    (str(uuid.uuid4()), item_id, payload.historicoId, agora, agora),
-                )
+            conn.execute(
+                "INSERT INTO vinculos (id, lancamento_id, nota_id, historico_id, criado_em, atualizado_em, origem) "
+                "VALUES (?, ?, NULL, ?, ?, ?, 'importado-historico')",
+                (str(uuid.uuid4()), item_id, payload.historicoId, agora, agora),
+            )
 
     conn.commit()
 
