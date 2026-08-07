@@ -122,6 +122,7 @@ export default function NotaFiscal() {
   const [carregandoArquivo, setCarregandoArquivo] = useState<string | null>(null);
   const [pickerVinculo, setPickerVinculo] = useState<{ lancId: string; tipo: "nota" | "relatorio" } | null>(null);
   const [candidatosVinculo, setCandidatosVinculo] = useState<any[]>([]);
+  const [buscandoCandidatos, setBuscandoCandidatos] = useState(false);
   const [vinculando, setVinculando] = useState(false);
   // NotasFiscaisEmitidas é renderizado logo abaixo, na mesma página, mas busca seus
   // próprios dados de forma independente - esse contador avisa o filho toda vez que
@@ -304,21 +305,27 @@ ${form.descricao}
     }
     setPickerVinculo({ lancId, tipo });
     setCandidatosVinculo([]);
+    setBuscandoCandidatos(true);
     setErro("");
     try {
       const res = await fetch(`${API_BASE}/vinculos/sugestoes?tipo=financeiro&id=${lancId}`);
       const data = await res.json();
-      let candidatos = data.status === "ok" ? (tipo === "nota" ? data.candidatosNota : data.candidatosHistorico) || [] : [];
+      let candidatos: any[] = data.status === "ok" ? (tipo === "nota" ? data.candidatosNota : data.candidatosHistorico) || [] : [];
+      // Só mostra quem realmente tem arquivo anexado - vincular um registro sem PDF
+      // (só dados, sem upload) cria o vínculo mas nunca vai ter o que visualizar.
+      candidatos = candidatos.filter((c: any) => c.temArquivo);
       if (candidatos.length === 0) {
         // Sem sugestão automática (cliente/valor não bateram) - mostra a lista completa,
         // o backend recusa com mensagem clara se o item escolhido já estiver vinculado.
         const resTudo = await fetch(tipo === "nota" ? `${API_BASE}/notas-fiscais` : `${API_BASE}/historico-pdfs`);
         const dataTudo = await resTudo.json();
-        candidatos = tipo === "nota" ? dataTudo.notas || [] : dataTudo.historico || [];
+        candidatos = (tipo === "nota" ? dataTudo.notas || [] : dataTudo.historico || []).filter((c: any) => c.temArquivo);
       }
       setCandidatosVinculo(candidatos);
     } catch (err) {
       setErro(`Não consegui buscar as opções pra vincular: ${err}`);
+    } finally {
+      setBuscandoCandidatos(false);
     }
   }
 
@@ -603,8 +610,12 @@ ${form.descricao}
                           style={{ border: "1px solid #d1d5db", borderRadius: 8, padding: 8, fontSize: 12, fontWeight: 700, maxWidth: 320 }}
                         >
                           <option value="">
-                            {candidatosVinculo.length === 0
+                            {buscandoCandidatos
                               ? "Buscando..."
+                              : candidatosVinculo.length === 0
+                              ? pickerVinculo.tipo === "nota"
+                                ? "Nenhuma nota com arquivo disponível"
+                                : "Nenhum relatório com arquivo disponível"
                               : pickerVinculo.tipo === "nota"
                               ? "Escolher nota fiscal..."
                               : "Escolher relatório..."}
