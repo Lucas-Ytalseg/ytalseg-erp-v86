@@ -107,48 +107,7 @@ export default function HistoricoPDFs({ onAbrirRelatorio }: { onAbrirRelatorio?:
   const [pendentes, setPendentes] = useState<HistoricoItem[]>([]);
   const [editando, setEditando] = useState<HistoricoItem | null>(null);
   const [carregandoArquivo, setCarregandoArquivo] = useState<string | null>(null);
-  const [anexandoId, setAnexandoId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const inputAnexarRef = useRef<HTMLInputElement>(null);
-  const itemParaAnexarRef = useRef<string | null>(null);
-
-  function abrirSeletorAnexar(itemId: string) {
-    itemParaAnexarRef.current = itemId;
-    inputAnexarRef.current?.click();
-  }
-
-  async function onArquivoAnexarSelecionado(e: React.ChangeEvent<HTMLInputElement>) {
-    const arquivo = e.target.files?.[0];
-    const itemId = itemParaAnexarRef.current;
-    e.target.value = "";
-    if (!arquivo || !itemId) return;
-    if (!arquivo.name.toLowerCase().endsWith(".pdf")) {
-      setMsg("Envie apenas arquivos PDF.");
-      return;
-    }
-    if (arquivo.size > TAMANHO_MAXIMO) {
-      setMsg("Arquivo maior que 15MB.");
-      return;
-    }
-    setAnexandoId(itemId);
-    setMsg("");
-    try {
-      const form = new FormData();
-      form.append("arquivo", arquivo);
-      const res = await fetch(`${API_BASE}/historico-pdfs/${itemId}/arquivo`, { method: "POST", body: form });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setMsg(data.detail || "Erro ao anexar o PDF.");
-        return;
-      }
-      setMsg("PDF anexado com sucesso.");
-      await carregar();
-    } catch (err) {
-      setMsg(`Erro ao anexar o PDF: ${err}`);
-    } finally {
-      setAnexandoId(null);
-    }
-  }
 
   async function carregar() {
     setCarregando(true);
@@ -446,13 +405,6 @@ export default function HistoricoPDFs({ onAbrirRelatorio }: { onAbrirRelatorio?:
           <button className="hist-btn hist-btn-green" onClick={abrirSeletor} disabled={enviando}>
             {enviando ? "Enviando..." : "Subir PDFs antigos"}
           </button>
-          <input
-            ref={inputAnexarRef}
-            type="file"
-            accept="application/pdf"
-            style={{ display: "none" }}
-            onChange={onArquivoAnexarSelecionado}
-          />
           <button className="hist-btn hist-btn-red" onClick={limparTudo}>Limpar tudo</button>
         </div>
       </div>
@@ -524,11 +476,6 @@ export default function HistoricoPDFs({ onAbrirRelatorio }: { onAbrirRelatorio?:
                           {carregandoArquivo === `baixar-${item.id}` ? "Baixando..." : "Baixar"}
                         </button>
                       </>
-                    )}
-                    {!item.temArquivo && (
-                      <button className="hist-btn" onClick={() => abrirSeletorAnexar(item.id)} disabled={anexandoId === item.id}>
-                        {anexandoId === item.id ? "Anexando..." : "Anexar PDF"}
-                      </button>
                     )}
                     {item.origem === "importado" && (
                       <button className="hist-btn" onClick={() => setEditando(item)}>Editar</button>

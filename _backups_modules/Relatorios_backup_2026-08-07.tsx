@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import logo from "../assets/logo.png";
 import cartaoYtalseg from "../assets/cartao-ytalseg.png";
 import { enviarRelatorioParaFinanceiro } from "./Automacao";
@@ -208,13 +208,6 @@ export default function Relatorios() {
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState("");
   const [rascunhoStatus, setRascunhoStatus] = useState("");
-  // V15: passo opcional pós-impressão - guarda o id do registro recém-criado no
-  // Histórico pra permitir anexar, se o usuário quiser, o PDF que ele acabou de
-  // salvar (o mesmo arquivo, sem regerar nada). Não interfere na geração do PDF.
-  const [ultimoHistoricoId, setUltimoHistoricoId] = useState<string | null>(null);
-  const [anexandoRelatorio, setAnexandoRelatorio] = useState(false);
-  const [anexoStatus, setAnexoStatus] = useState("");
-  const inputAnexarRelatorioRef = useRef<HTMLInputElement>(null);
   const [empresas, setEmpresas] = useState<Empresa[]>([]);
   const [empresaId, setEmpresaId] = useState("geoambiental");
   const [mostrarCadastro, setMostrarCadastro] = useState(false);
@@ -458,7 +451,7 @@ export default function Relatorios() {
   async function registrarNoHistorico(tipo: "cliente" | "interno") {
     try {
       const dados = montarBackupRelatorioAtual();
-      const res = await fetch(`${API_BASE}/historico-pdfs`, {
+      await fetch(`${API_BASE}/historico-pdfs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -469,51 +462,8 @@ export default function Relatorios() {
           dados,
         }),
       });
-      // V15: guarda o id do registro pra oferecer o passo opcional de anexar o
-      // PDF depois - não muda em nada o que já acontecia aqui antes.
-      const data = await res.json().catch(() => null);
-      if (data?.status === "ok" && data.item?.id) {
-        setAnexoStatus("");
-        setUltimoHistoricoId(data.item.id);
-      }
     } catch {
       // Não bloqueia a geração do PDF se o registro no histórico falhar.
-    }
-  }
-
-  // V15: passo opcional depois de "Salvar PDF Cliente/Interno" - o navegador gera o
-  // PDF via window.print() (não existe blob em memória pra reaproveitar), então quem
-  // garante que o arquivo guardado no servidor é IDÊNTICO ao baixado é o usuário
-  // escolher, no seletor de arquivo, o próprio PDF que acabou de salvar. Nunca
-  // bloqueia nem atrasa a geração do PDF - só aparece depois que ela já terminou.
-  async function onAnexarPdfGerado(e: React.ChangeEvent<HTMLInputElement>) {
-    const arquivo = e.target.files?.[0];
-    e.target.value = "";
-    if (!arquivo || !ultimoHistoricoId) return;
-    setAnexandoRelatorio(true);
-    setAnexoStatus("");
-    try {
-      const form = new FormData();
-      form.append("arquivo", arquivo);
-      const res = await fetch(`${API_BASE}/historico-pdfs/${ultimoHistoricoId}/arquivo`, {
-        method: "POST",
-        body: form,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setAnexoStatus(
-          `⚠️ O relatório foi salvo normalmente, mas o PDF não subiu pro servidor: ${data.detail || "erro desconhecido"}. Você pode anexá-lo depois pelo Histórico de PDFs.`
-        );
-        return;
-      }
-      setAnexoStatus("✅ Cópia do PDF guardada no sistema.");
-      setUltimoHistoricoId(null);
-    } catch (err) {
-      setAnexoStatus(
-        `⚠️ O relatório foi salvo normalmente, mas o PDF não subiu pro servidor (${err}). Você pode anexá-lo depois pelo Histórico de PDFs.`
-      );
-    } finally {
-      setAnexandoRelatorio(false);
     }
   }
 
@@ -5365,24 +5315,6 @@ body.modo-interno .ytalseg-card-final .email-line{
       </div>
 
       {rascunhoStatus && <div className="rascunho-status">{rascunhoStatus}</div>}
-
-      {ultimoHistoricoId && (
-        <div className="rascunho-status" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span>💾 Quer guardar uma cópia deste PDF no sistema (pra poder visualizar/vincular depois)?</span>
-          <input
-            ref={inputAnexarRelatorioRef}
-            type="file"
-            accept="application/pdf"
-            style={{ display: "none" }}
-            onChange={onAnexarPdfGerado}
-          />
-          <button className="btn-gray" disabled={anexandoRelatorio} onClick={() => inputAnexarRelatorioRef.current?.click()}>
-            {anexandoRelatorio ? "Enviando..." : "Selecionar o PDF que acabei de salvar"}
-          </button>
-          <button className="btn-gray" onClick={() => setUltimoHistoricoId(null)}>Agora não</button>
-        </div>
-      )}
-      {anexoStatus && <div className="rascunho-status">{anexoStatus}</div>}
 
       <div className={`sheet ${!temDiasTrabalhados ? "sem-dias-trabalhados" : ""}`} style={{ transform: `scale(${zoomRelatorio})`, transformOrigin: "top center" }}>
         <div className="watermark">

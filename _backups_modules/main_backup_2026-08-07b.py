@@ -1751,41 +1751,6 @@ async def upload_historico_pdfs(files: List[UploadFile] = File(...), sessao: dic
     conn.close()
     return {"status": "ok", "itens": criados, "erros": erros}
 
-@app.post("/historico-pdfs/{item_id}/arquivo")
-async def anexar_arquivo_historico_pdf(item_id: str, arquivo: UploadFile = File(...), sessao: dict = Depends(exigir_admin)):
-    """Anexa um PDF a um registro do histórico que JÁ EXISTE - usado tanto pelo botão
-    'Anexar PDF' (relatórios antigos só-com-dados) quanto pelo passo opcional depois de
-    'Salvar PDF Cliente/Interno' (V15). Nunca cria um registro novo. Se o registro já
-    tiver um arquivo, recusa (409) em vez de substituir sem avisar - evita apagar um
-    arquivo por engano; quem quiser trocar precisa excluir o registro e subir de novo."""
-    conn = conectar_db()
-    row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Registro do histórico não encontrado")
-    if row["tem_arquivo"]:
-        conn.close()
-        raise HTTPException(status_code=409, detail="Este registro já tem um arquivo anexado.")
-
-    conteudo = await arquivo.read()
-    erro = _validar_pdf_upload(conteudo, arquivo.filename or "")
-    if erro:
-        conn.close()
-        raise HTTPException(status_code=400, detail=erro)
-
-    nome_fisico = f"{uuid.uuid4()}.pdf"
-    caminho = UPLOAD_RELATORIOS_DIR / nome_fisico
-    caminho.write_bytes(conteudo)
-
-    conn.execute(
-        "UPDATE historico_pdfs SET arquivo_nome = ?, tem_arquivo = 1, arquivo_nome_original = ? WHERE id = ?",
-        (nome_fisico, arquivo.filename or nome_fisico, item_id),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
-    conn.close()
-    return {"status": "ok", "item": row_historico_resumo(row)}
-
 @app.patch("/historico-pdfs/{item_id}")
 def editar_historico_pdf(item_id: str, payload: HistoricoPdfEditPayload, sessao: dict = Depends(exigir_admin)):
     conn = conectar_db()
