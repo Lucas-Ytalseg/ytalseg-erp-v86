@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -10,8 +10,10 @@ import os
 import shutil
 import sqlite3
 import calendar
+import pdfplumber
+import pytesseract
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import uuid
 
 app = FastAPI(title="YTALSEG Backend", version="8.0.0 PROFISSIONAL")
@@ -53,6 +55,14 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+UPLOAD_RELATORIOS_DIR = UPLOAD_DIR / "relatorios"
+UPLOAD_RELATORIOS_DIR.mkdir(parents=True, exist_ok=True)
+
+UPLOAD_NOTAS_DIR = UPLOAD_DIR / "notas"
+UPLOAD_NOTAS_DIR.mkdir(parents=True, exist_ok=True)
+
+MAX_UPLOAD_SIZE = 15 * 1024 * 1024  # 15 MB
+
 BACKUP_DIR = DATA_DIR / "backups"
 BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -61,6 +71,11 @@ DB_PATH = DATA_DIR / "ytalseg_erp.db"
 
 POPPLER_PATH = r"C:\Users\lucas\Downloads\Release-25.12.0-0\poppler-25.12.0\Library\bin"
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# No Windows local usa o caminho fixo do Tesseract; no Linux/Railway (Dockerfile instala
+# tesseract-ocr via apt) o binário já está no PATH, então não precisa configurar nada.
+if Path(TESSERACT_PATH).exists():
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
 
 # ===== EMPRESA PADRÃO =====
 EMPRESA_ATUAL = {
@@ -143,6 +158,396 @@ def parse_mes_ano_referencia(referencia: str, fallback_data: str = ""):
     hoje = datetime.now()
     return mes_encontrado or hoje.month, ano_encontrado or hoje.year
 
+def parse_mes_ano_sem_fallback(referencia: str):
+    """Como parse_mes_ano_referencia, mas sem chutar o mês/ano de hoje quando não
+    encontra os dois no texto — melhor deixar em branco (o usuário revisa e corrige
+    no histórico) do que registrar uma competência errada pra um documento antigo."""
+    texto = (referencia or "").lower()
+    mes_encontrado = None
+    for nome, numero in MESES_PT.items():
+        if nome in texto:
+            mes_encontrado = numero
+            break
+    ano_match = re.search(r"(20\d{2})", texto)
+    ano_encontrado = int(ano_match.group(1)) if ano_match else None
+    if mes_encontrado and ano_encontrado:
+        return mes_encontrado, ano_encontrado
+    return None, None
+
+# ===== EXTRAÇÃO DE PDF (upload de relatórios antigos e notas fiscais) =====
+def extrair_texto_pdf(caminho: Path) -> str:
+    """Extrai todo o texto de um PDF. Primeiro tenta a camada de texto nativa (rápido — é o caso dos
+    relatórios da própria YTALSEG, gerados via impressão do navegador). Se o PDF não tiver texto
+    selecionável (comum em notas fiscais da Prefeitura, que muitas vezes são vetorizadas/escaneadas),
+    cai para OCR renderizando cada página como imagem. Nunca lança exceção — string vazia em caso de
+    erro, pra sempre cair no preenchimento manual."""
+    texto_nativo = ""
+    try:
+        partes = []
+        with pdfplumber.open(caminho) as pdf:
+            for pagina in pdf.pages:
+                partes.append(pagina.extract_text() or "")
+        texto_nativo = "\n".join(partes)
+    except Exception:
+        texto_nativo = ""
+
+    if len(texto_nativo.strip()) >= 30:
+        return texto_nativo
+
+    try:
+        partes_ocr = []
+        with pdfplumber.open(caminho) as pdf:
+            for pagina in pdf.pages:
+                imagem = pagina.to_image(resolution=300).original
+                partes_ocr.append(pytesseract.image_to_string(imagem, lang="por"))
+        return "\n".join(partes_ocr)
+    except Exception:
+        return texto_nativo
+
+def _valor_brl_para_float(valor_str: str) -> float:
+    try:
+        limpo = valor_str.strip().replace(".", "").replace(",", ".")
+        return float(limpo)
+    except Exception:
+        return 0.0
+
+def _data_br_para_iso(data_br: str) -> str:
+    try:
+        d, m, a = data_br.strip().split("/")
+        return f"{a}-{m.zfill(2)}-{d.zfill(2)}"
+    except Exception:
+        return ""
+
+def _validar_pdf_upload(conteudo: bytes, nome_original: str):
+    """Retorna uma mensagem de erro (string) se o arquivo for inválido, ou None se estiver ok."""
+    if not (nome_original or "").lower().endswith(".pdf"):
+        return "Envie apenas arquivos PDF."
+    if not conteudo.startswith(b"%PDF"):
+        return "Arquivo não parece ser um PDF válido."
+    if len(conteudo) > MAX_UPLOAD_SIZE:
+        return f"Arquivo maior que {MAX_UPLOAD_SIZE // (1024 * 1024)}MB."
+    return None
+
+def _normalizar_ascii(s: str) -> str:
+    troca = str.maketrans("áâãàéêíóôõúç", "aaaaeeiooouc")
+    return re.sub(r"[^a-z]", "", (s or "").lower().translate(troca))
+
+def _extrair_colunas_info_relatorio_por_posicao(caminho: Path) -> dict:
+    """O cabeçalho do relatório de horas (Relatorios.tsx, bloco .info) é um grid CSS
+    de 4 colunas na mesma linha visual ("Empresa / Cliente", "Mês / Referência",
+    "Responsáveis técnicos", "Arquivo processado"). Quando o PDF é gerado via
+    impressão do navegador, essas 4 colunas costumam quebrar em várias linhas de
+    texto (nome de cliente comprido, rótulo "Responsáveis técnicos" quebrando em 2
+    linhas etc.) — então nem a extração de texto simples nem uma extração "com
+    layout" (que só preserva espaçamento de UMA linha) dão conta de reconstruir o
+    conteúdo de cada coluna corretamente.
+
+    Por isso esta função usa a POSIÇÃO (x0) de cada palavra no PDF (via
+    pdfplumber.extract_words) pra descobrir onde cada uma das 4 colunas começa
+    (a partir da primeira palavra de cada rótulo) e agrupa todas as palavras
+    dentro da faixa horizontal de cada coluna, em qualquer linha, reconstruindo o
+    texto de cada célula mesmo com quebras de linha. A fatia vertical (onde o
+    bloco de cabeçalho termina e o corpo do relatório começa) é achada pelo maior
+    espaço vertical entre linhas logo abaixo do cabeçalho — a quebra pro próximo
+    bloco (margem CSS) é sempre bem maior que o espaçamento entre linhas dentro
+    da própria célula."""
+    try:
+        with pdfplumber.open(caminho) as pdf:
+            if not pdf.pages:
+                return {}
+            palavras = pdf.pages[0].extract_words(use_text_flow=False, keep_blank_chars=False)
+    except Exception:
+        return {}
+    if not palavras:
+        return {}
+
+    alvos = {
+        "cliente": "empresa",
+        "referencia": "mes",
+        "responsaveis": "responsaveis",
+        "arquivo": "arquivo",
+    }
+    ancoras = {}
+    for chave, alvo in alvos.items():
+        for w in palavras:
+            if _normalizar_ascii(w["text"]) == alvo:
+                ancoras[chave] = (w["x0"], w["top"])
+                break
+    if len(ancoras) < 4:
+        return {}
+
+    colunas_ordenadas = sorted(ancoras.items(), key=lambda item: item[1][0])
+    topo_cabecalho = min(top for _, (_, top) in ancoras.items())
+
+    candidatas = sorted([w for w in palavras if w["top"] >= topo_cabecalho - 1], key=lambda w: w["top"])
+    tops_unicos = sorted({round(w["top"], 1) for w in candidatas})
+
+    limite_inferior = tops_unicos[-1] if tops_unicos else topo_cabecalho
+    janela = tops_unicos[:16]
+    if len(janela) > 1:
+        gaps = [(janela[i] - janela[i - 1], janela[i - 1]) for i in range(1, len(janela))]
+        maior_gap_top = max(gaps, key=lambda g: g[0])[1]
+        limite_inferior = maior_gap_top
+
+    bloco = [w for w in candidatas if w["top"] <= limite_inferior + 1]
+
+    valores_por_coluna: dict = {chave: [] for chave, _ in colunas_ordenadas}
+    for w in bloco:
+        for idx, (chave, (x_ini, _)) in enumerate(colunas_ordenadas):
+            x_fim = colunas_ordenadas[idx + 1][1][0] if idx + 1 < len(colunas_ordenadas) else float("inf")
+            if x_ini - 3 <= w["x0"] < x_fim - 3:
+                valores_por_coluna[chave].append(w)
+                break
+
+    def montar_texto(lista_palavras):
+        lista_ordenada = sorted(lista_palavras, key=lambda w: (round(w["top"], 1), w["x0"]))
+        return " ".join(w["text"] for w in lista_ordenada)
+
+    resultado = {}
+    m_cliente = re.search(r"Empresa\s*/\s*Cliente\s*(.*)", montar_texto(valores_por_coluna.get("cliente", [])), re.IGNORECASE | re.DOTALL)
+    if m_cliente:
+        cliente = re.split(r"CNPJ\s*:", m_cliente.group(1), maxsplit=1, flags=re.IGNORECASE)[0]
+        resultado["cliente"] = cliente.strip()
+
+    m_ref = re.search(r"M[êe]s\s*/\s*Refer[êe]ncia\s*(.*)", montar_texto(valores_por_coluna.get("referencia", [])), re.IGNORECASE | re.DOTALL)
+    if m_ref:
+        resultado["referencia"] = m_ref.group(1).strip()
+
+    return resultado
+
+def parse_relatorio_ytalseg(texto: str, caminho: Optional[Path] = None):
+    """Tenta reconhecer um PDF como um relatório gerado pelo próprio ERP YTALSEG
+    (impresso via window.print() e salvo como PDF pelo usuário). Retorna None se a
+    assinatura do relatório não for encontrada — o formulário fica em branco pro
+    usuário preencher manualmente.
+
+    Usa o título "RELATÓRIO DE HORAS" como assinatura (em vez do texto de discriminação
+    de serviços, que também aparece nas notas fiscais emitidas — o texto é copiado de lá
+    pro portal da Prefeitura, então não serve pra diferenciar os dois tipos de PDF)."""
+    if not texto or "YTALSEG" not in texto or "RELATÓRIO DE HORAS" not in texto:
+        return None
+
+    texto_limpo = texto.replace("\xa0", " ")
+    dados = {"cliente": "", "referencia": "", "valor": 0.0, "tipo": "Cliente"}
+
+    colunas = _extrair_colunas_info_relatorio_por_posicao(caminho) if caminho else {}
+    dados["cliente"] = colunas.get("cliente", "")
+    dados["referencia"] = colunas.get("referencia", "")
+
+    if not dados["cliente"]:
+        m_cliente = re.search(r"Empresa\s*/\s*Cliente\s*\n?\s*([^\n]+)", texto_limpo)
+        if m_cliente:
+            dados["cliente"] = m_cliente.group(1).strip()
+
+    if not dados["referencia"]:
+        m_ref = re.search(r"M[êe]s\s*/\s*Refer[êe]ncia\s*\n?\s*([^\n]+)", texto_limpo, re.IGNORECASE)
+        if m_ref:
+            dados["referencia"] = m_ref.group(1).strip()
+
+    # Valor: ancorado no rótulo "VALOR DA NOTA" (aparece 2x: resumo e rodapé) em vez
+    # de simplesmente pegar o último "R$" do documento — mais preciso e resiliente
+    # a qualquer texto extra depois do total. Mantém o comportamento antigo (último
+    # R$ do documento) só como fallback, se o rótulo não for encontrado.
+    valor_encontrado = None
+    for m_label in re.finditer(r"VALOR\s+DA\s+NOTA", texto_limpo, re.IGNORECASE):
+        janela = texto_limpo[m_label.end(): m_label.end() + 60]
+        m_valor = re.search(r"R\$\s*([\d.]+,\d{2})", janela)
+        if m_valor:
+            valor_encontrado = m_valor.group(1)
+    if valor_encontrado:
+        dados["valor"] = _valor_brl_para_float(valor_encontrado)
+    else:
+        valores = re.findall(r"R\$\s*([\d.]+,\d{2})", texto_limpo)
+        if valores:
+            dados["valor"] = _valor_brl_para_float(valores[-1])
+
+    if "Diurna" in texto_limpo and "Noturna" in texto_limpo and "Adic. 25%" in texto_limpo:
+        dados["tipo"] = "Interno"
+
+    return dados
+
+def _janela_apos(texto: str, label_regex: str, tamanho: int = 150) -> str:
+    """Retorna o trecho de texto logo após um rótulo. Usado em vez de âncoras de linha
+    fixas porque OCR de layout em caixas (como a NFS-e) intercala rótulo/valor com outros
+    textos vizinhos na mesma linha, então "próxima linha" não é confiável."""
+    m = re.search(label_regex, texto, re.IGNORECASE)
+    if not m:
+        return ""
+    return texto[m.end(): m.end() + tamanho]
+
+def parse_nfse_sp(texto: str):
+    """Extrai os campos de uma NFS-e da Prefeitura de São Paulo. Nunca lança exceção —
+    campos não encontrados voltam vazios/None pra permitir preenchimento manual."""
+    dados = {
+        "numeroNota": "", "cliente": "", "cnpjTomador": "", "mesReferencia": None,
+        "anoReferencia": None, "dataEmissao": "", "vencimento": "", "valor": 0.0,
+        "codigoVerificacao": "",
+    }
+    if not texto:
+        return dados
+
+    texto_limpo = texto.replace("\xa0", " ")
+
+    janela_num = _janela_apos(texto_limpo, r"N[uú]mero da Nota", 120)
+    m_num = re.search(r"\b(\d{6,})\b", janela_num)
+    if m_num:
+        dados["numeroNota"] = m_num.group(1).strip()
+
+    janela_emissao = _janela_apos(texto_limpo, r"Data e Hora de Emiss[ãa]o", 150)
+    m_emissao = re.search(r"(\d{2}/\d{2}/\d{4})(?:\s+\d{2}:\d{2}:\d{2})?", janela_emissao)
+    if m_emissao:
+        dados["dataEmissao"] = _data_br_para_iso(m_emissao.group(1))
+
+    janela_verif = _janela_apos(texto_limpo, r"C[óo]digo de Verifica[çc][ãa]o", 150)
+    m_verif = re.search(r"([A-Z0-9]{4}-[A-Z0-9]{4})", janela_verif)
+    if m_verif:
+        dados["codigoVerificacao"] = m_verif.group(1).strip()
+
+    m_secao_tomador = re.search(
+        r"TOMADOR DE SERVI[ÇC]OS(.*?)(?:DISCRIMINA[ÇC][ÃA]O|INTERMEDI[ÁA]RIO|$)", texto_limpo, re.DOTALL
+    )
+    bloco_tomador = m_secao_tomador.group(1) if m_secao_tomador else texto_limpo
+
+    m_nome = re.search(r"Raz[ãa]o Social:\s*([^\n]+)", bloco_tomador)
+    if m_nome:
+        dados["cliente"] = m_nome.group(1).strip()
+
+    m_cnpj = re.search(r"CPF/CNPJ:\s*([\d./-]+)", bloco_tomador)
+    if m_cnpj:
+        dados["cnpjTomador"] = m_cnpj.group(1).strip()
+
+    m_valor = re.search(r"VALOR TOTAL DO SERVI[ÇC]O\s*=?\s*R\$\s*([\d.]+,\d{2})", texto_limpo)
+    if m_valor:
+        dados["valor"] = _valor_brl_para_float(m_valor.group(1))
+
+    m_mes = re.search(r"M[ÊE]S DE\s+([A-ZÇÃÕÁÉÍÓÚ]+)\s+DE\s+(\d{4})", texto_limpo, re.IGNORECASE)
+    if m_mes:
+        mes_num = MESES_PT.get(m_mes.group(1).strip().lower())
+        if mes_num:
+            dados["mesReferencia"] = mes_num
+            dados["anoReferencia"] = int(m_mes.group(2))
+
+    m_venc = re.search(r"VENCIMENTO\s+(\d{2}/\d{2}/\d{4})", texto_limpo, re.IGNORECASE)
+    if m_venc:
+        dados["vencimento"] = _data_br_para_iso(m_venc.group(1))
+
+    return dados
+
+def sugerir_financeiro(cliente: str, valor: float, mes, ano):
+    """Sugere um lançamento do financeiro que pode corresponder a uma nota fiscal recém-importada,
+    comparando cliente (substring nos dois sentidos) e valor (±R$0,01). Prioriza também bater mês/ano."""
+    if not cliente:
+        return None
+    conn = conectar_db()
+    candidatos = conn.execute("SELECT * FROM financeiro WHERE status != 'recebido'").fetchall()
+    conn.close()
+
+    cliente_norm = cliente.strip().lower()
+    melhor = None
+    for c in candidatos:
+        nome_cand = (c["cliente"] or "").strip().lower()
+        if not nome_cand:
+            continue
+        nome_ok = cliente_norm in nome_cand or nome_cand in cliente_norm
+        valor_ok = abs((c["valor"] or 0) - (valor or 0)) < 0.01
+        if nome_ok and valor_ok:
+            mes_ok = bool(mes) and bool(ano) and c["mes_referencia"] == mes and c["ano_referencia"] == ano
+            if mes_ok:
+                return c["id"]
+            melhor = melhor or c["id"]
+    return melhor
+
+def _cliente_bate(a, b) -> bool:
+    a = (a or "").strip().lower()
+    b = (b or "").strip().lower()
+    return bool(a) and bool(b) and (a in b or b in a)
+
+def _resolver_financeiro_para_nota(nota_row, financeiro_rows):
+    """Acha o lançamento do financeiro correspondente a uma nota fiscal (não cancelada):
+    1) vínculo explícito (nota.financeiro_id, criado via 'Vincular'); 2) senão cliente
+    (substring nos dois sentidos) + valor (±R$0,01) + mês/ano EXATOS. Mais rígida que
+    sugerir_financeiro (que só 'prefere' bater mês/ano): aqui o resultado alimenta direto
+    os totais do Dashboard, então chutar errado é pior que não achar."""
+    if nota_row["financeiro_id"]:
+        direto = next((f for f in financeiro_rows if f["id"] == nota_row["financeiro_id"]), None)
+        if direto:
+            return direto
+    if not nota_row["mes_referencia"] or not nota_row["ano_referencia"]:
+        return None
+    for f in financeiro_rows:
+        if not _cliente_bate(nota_row["cliente"], f["cliente"]):
+            continue
+        if abs((f["valor"] or 0) - (nota_row["valor"] or 0)) >= 0.01:
+            continue
+        if not f["mes_referencia"] or not f["ano_referencia"]:
+            continue
+        if f["mes_referencia"] != nota_row["mes_referencia"] or f["ano_referencia"] != nota_row["ano_referencia"]:
+            continue
+        return f
+    return None
+
+def montar_dashboard_financeiro():
+    """Monta os dados que alimentam o Dashboard (aba Principal): pra cada nota fiscal
+    não cancelada, resolve o lançamento do financeiro correspondente (vínculo direto ou
+    casamento por cliente+valor+mês/ano) e calcula se está recebida/aberta/vencida.
+    Também separa os lançamentos do financeiro sem nenhuma nota correspondente ('sem nota
+    emitida') e monta um mapa de vínculos (financeiro_id -> notaId/historicoPdfId) usado
+    também pelo 'Visualizar' do histórico de pendências (NotaFiscal.tsx)."""
+    conn = conectar_db()
+    notas = conn.execute("SELECT * FROM notas_fiscais WHERE COALESCE(cancelada, 0) = 0").fetchall()
+    financeiro_rows = conn.execute("SELECT * FROM financeiro").fetchall()
+    historico_rows = conn.execute("SELECT * FROM historico_pdfs").fetchall()
+    conn.close()
+
+    hoje = datetime.now().strftime("%Y-%m-%d")
+    financeiro_usados = set()
+    notas_enriquecidas = []
+    for n in notas:
+        item = row_nota_fiscal(n)
+        f = _resolver_financeiro_para_nota(n, financeiro_rows)
+        if f:
+            financeiro_usados.add(f["id"])
+            item["financeiroIdResolvido"] = f["id"]
+            if (f["status"] or "") == "recebido":
+                item["statusFinanceiro"] = "recebido"
+                item["dataRecebimento"] = f["data_recebimento"] or ""
+            else:
+                item["statusFinanceiro"] = "vencido" if (item["vencimento"] and item["vencimento"] < hoje) else "aberto"
+                item["dataRecebimento"] = ""
+        else:
+            item["financeiroIdResolvido"] = None
+            item["statusFinanceiro"] = "vencido" if (item["vencimento"] and item["vencimento"] < hoje) else "aberto"
+            item["dataRecebimento"] = ""
+        notas_enriquecidas.append(item)
+
+    sem_nota_emitida = [
+        row_financeiro(f) for f in financeiro_rows
+        if f["id"] not in financeiro_usados and (f["status"] or "") != "nota_cancelada"
+    ]
+
+    vinculos_financeiro = {}
+    for item in notas_enriquecidas:
+        if item["financeiroIdResolvido"]:
+            vinculos_financeiro.setdefault(item["financeiroIdResolvido"], {})["notaId"] = item["id"]
+    for f in financeiro_rows:
+        if not f["mes_referencia"] or not f["ano_referencia"]:
+            continue
+        for h in historico_rows:
+            if not _cliente_bate(f["cliente"], h["cliente"]):
+                continue
+            if abs((h["valor"] or 0) - (f["valor"] or 0)) >= 0.01:
+                continue
+            h_mes = h["mes_referencia"] if "mes_referencia" in h.keys() else None
+            h_ano = h["ano_referencia"] if "ano_referencia" in h.keys() else None
+            if not h_mes or not h_ano:
+                continue
+            if h_mes != f["mes_referencia"] or h_ano != f["ano_referencia"]:
+                continue
+            vinculos_financeiro.setdefault(f["id"], {})["historicoPdfId"] = h["id"]
+            break
+
+    return notas_enriquecidas, sem_nota_emitida, vinculos_financeiro
+
 # ===== DATABASE =====
 def conectar_db():
     conn = sqlite3.connect(DB_PATH)
@@ -191,6 +596,24 @@ def init_db():
             dados_json TEXT
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS notas_fiscais (
+            id TEXT PRIMARY KEY,
+            numero_nota TEXT,
+            cliente TEXT,
+            cnpj_tomador TEXT,
+            mes_referencia INTEGER,
+            ano_referencia INTEGER,
+            data_emissao TEXT,
+            vencimento TEXT,
+            valor REAL DEFAULT 0,
+            codigo_verificacao TEXT,
+            arquivo_nome TEXT,
+            arquivo_nome_original TEXT,
+            criado_em TEXT NOT NULL,
+            financeiro_id TEXT DEFAULT ''
+        )
+    """)
 
     # ===== MIGRAÇÃO: novas colunas do financeiro (Agenda de Cobrança completa) =====
     colunas_existentes = {row["name"] for row in cur.execute("PRAGMA table_info(financeiro)").fetchall()}
@@ -208,6 +631,28 @@ def init_db():
         if nome_coluna not in colunas_existentes:
             cur.execute(f"ALTER TABLE financeiro ADD COLUMN {nome_coluna} {definicao}")
 
+    # ===== MIGRAÇÃO: novas colunas do historico_pdfs (upload de PDFs antigos) =====
+    colunas_hist = {row["name"] for row in cur.execute("PRAGMA table_info(historico_pdfs)").fetchall()}
+    novas_colunas_hist = {
+        "origem": "TEXT DEFAULT 'auto'",
+        "data_documento": "TEXT DEFAULT ''",
+        "arquivo_nome_original": "TEXT DEFAULT ''",
+        "mes_referencia": "INTEGER",
+        "ano_referencia": "INTEGER",
+    }
+    for nome_coluna, definicao in novas_colunas_hist.items():
+        if nome_coluna not in colunas_hist:
+            cur.execute(f"ALTER TABLE historico_pdfs ADD COLUMN {nome_coluna} {definicao}")
+
+    # ===== MIGRAÇÃO: nota fiscal cancelada (registro fica, só sai dos totais) =====
+    colunas_notas = {row["name"] for row in cur.execute("PRAGMA table_info(notas_fiscais)").fetchall()}
+    novas_colunas_notas = {
+        "cancelada": "INTEGER DEFAULT 0",
+    }
+    for nome_coluna, definicao in novas_colunas_notas.items():
+        if nome_coluna not in colunas_notas:
+            cur.execute(f"ALTER TABLE notas_fiscais ADD COLUMN {nome_coluna} {definicao}")
+
     conn.commit()
 
     # Preenche mes_referencia/ano_referencia de lançamentos antigos (uma vez só)
@@ -218,6 +663,19 @@ def init_db():
         mes, ano = parse_mes_ano_referencia(row["referencia"], row["data_emissao"])
         cur.execute(
             "UPDATE financeiro SET mes_referencia = ?, ano_referencia = ? WHERE id = ?",
+            (mes, ano, row["id"]),
+        )
+    conn.commit()
+
+    # Preenche mes_referencia/ano_referencia do historico_pdfs (sem chutar: fica NULL
+    # se não identificar mês+ano no texto de referência salvo).
+    pendentes_hist = cur.execute(
+        "SELECT id, referencia FROM historico_pdfs WHERE mes_referencia IS NULL"
+    ).fetchall()
+    for row in pendentes_hist:
+        mes, ano = parse_mes_ano_sem_fallback(row["referencia"])
+        cur.execute(
+            "UPDATE historico_pdfs SET mes_referencia = ?, ano_referencia = ? WHERE id = ?",
             (mes, ano, row["id"]),
         )
     conn.commit()
@@ -250,6 +708,28 @@ class HistoricoPdfPayload(BaseModel):
     referencia: str = ""
     valor: float = 0
     dados: Optional[dict] = None
+
+class HistoricoPdfEditPayload(BaseModel):
+    cliente: Optional[str] = None
+    tipo: Optional[str] = None
+    referencia: Optional[str] = None
+    valor: Optional[float] = None
+    dataDocumento: Optional[str] = None
+
+class NotaFiscalEditPayload(BaseModel):
+    numeroNota: Optional[str] = None
+    cliente: Optional[str] = None
+    cnpjTomador: Optional[str] = None
+    mesReferencia: Optional[int] = None
+    anoReferencia: Optional[int] = None
+    dataEmissao: Optional[str] = None
+    vencimento: Optional[str] = None
+    valor: Optional[float] = None
+    codigoVerificacao: Optional[str] = None
+    cancelada: Optional[bool] = None
+
+class VincularFinanceiroPayload(BaseModel):
+    financeiroId: str
 
 class EquipePayload(BaseModel):
     id: Optional[str] = None
@@ -288,6 +768,7 @@ def row_financeiro(row):
     }
 
 def row_historico_resumo(row):
+    chaves = row.keys()
     return {
         "id": row["id"],
         "tipo": row["tipo"],
@@ -297,6 +778,31 @@ def row_historico_resumo(row):
         "criadoEm": row["criado_em"],
         "temArquivo": bool(row["tem_arquivo"]),
         "temDados": bool(row["dados_json"]),
+        "origem": (row["origem"] if "origem" in chaves else "auto") or "auto",
+        "dataDocumento": (row["data_documento"] if "data_documento" in chaves else "") or "",
+        "arquivoNomeOriginal": (row["arquivo_nome_original"] if "arquivo_nome_original" in chaves else "") or "",
+        "mesReferencia": (row["mes_referencia"] if "mes_referencia" in chaves else None),
+        "anoReferencia": (row["ano_referencia"] if "ano_referencia" in chaves else None),
+    }
+
+def row_nota_fiscal(row):
+    chaves = row.keys()
+    return {
+        "id": row["id"],
+        "numeroNota": row["numero_nota"] or "",
+        "cliente": row["cliente"] or "",
+        "cnpjTomador": row["cnpj_tomador"] or "",
+        "mesReferencia": row["mes_referencia"],
+        "anoReferencia": row["ano_referencia"],
+        "dataEmissao": row["data_emissao"] or "",
+        "vencimento": row["vencimento"] or "",
+        "valor": row["valor"] or 0,
+        "codigoVerificacao": row["codigo_verificacao"] or "",
+        "arquivoNomeOriginal": row["arquivo_nome_original"] or "",
+        "temArquivo": bool(row["arquivo_nome"]),
+        "criadoEm": row["criado_em"],
+        "financeiroId": row["financeiro_id"] or "",
+        "cancelada": bool(row["cancelada"]) if "cancelada" in chaves and row["cancelada"] is not None else False,
     }
 
 def row_equipe(row):
@@ -363,6 +869,11 @@ def listar_financeiro():
     conn.close()
     return {"status": "ok", "lancamentos": [row_financeiro(r) for r in rows]}
 
+@app.get("/dashboard/financeiro-notas")
+def dashboard_financeiro_notas():
+    notas, sem_nota_emitida, vinculos_financeiro = montar_dashboard_financeiro()
+    return {"status": "ok", "notas": notas, "semNotaEmitida": sem_nota_emitida, "vinculosFinanceiro": vinculos_financeiro}
+
 @app.post("/financeiro")
 def salvar_financeiro(payload: FinanceiroPayload):
     item_id = payload.id or gerar_id()
@@ -418,17 +929,120 @@ def obter_historico_pdf(item_id: str):
     item["dados"] = json.loads(row["dados_json"]) if row["dados_json"] else None
     return {"status": "ok", "item": item}
 
+@app.post("/historico-pdfs/upload")
+async def upload_historico_pdfs(files: List[UploadFile] = File(...)):
+    criados = []
+    erros = []
+    conn = conectar_db()
+    for arquivo in files:
+        conteudo = await arquivo.read()
+        erro = _validar_pdf_upload(conteudo, arquivo.filename or "")
+        if erro:
+            erros.append({"arquivo": arquivo.filename, "erro": erro})
+            continue
+
+        nome_fisico = f"{uuid.uuid4()}.pdf"
+        caminho = UPLOAD_RELATORIOS_DIR / nome_fisico
+        caminho.write_bytes(conteudo)
+
+        texto = extrair_texto_pdf(caminho)
+        extraido = parse_relatorio_ytalseg(texto, caminho)
+
+        item_id = gerar_id()
+        criado_em = datetime.now().isoformat()
+        cliente = extraido["cliente"] if extraido else ""
+        referencia = extraido["referencia"] if extraido else ""
+        valor = extraido["valor"] if extraido else 0.0
+        tipo = extraido["tipo"] if extraido else "Cliente"
+        mes_ref, ano_ref = parse_mes_ano_sem_fallback(referencia)
+
+        conn.execute(
+            """INSERT INTO historico_pdfs
+               (id, tipo, cliente, referencia, valor, criado_em, arquivo_nome, tem_arquivo, dados_json,
+                origem, data_documento, arquivo_nome_original, mes_referencia, ano_referencia)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (item_id, tipo, cliente, referencia, valor, criado_em, nome_fisico, 1, None,
+             "importado", "", arquivo.filename or nome_fisico, mes_ref, ano_ref),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
+        criados.append(row_historico_resumo(row))
+    conn.close()
+    return {"status": "ok", "itens": criados, "erros": erros}
+
+@app.patch("/historico-pdfs/{item_id}")
+def editar_historico_pdf(item_id: str, payload: HistoricoPdfEditPayload):
+    conn = conectar_db()
+    row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"status": "erro", "erro": "Registro não encontrado"}
+
+    mapa = {
+        "cliente": "cliente", "tipo": "tipo", "referencia": "referencia",
+        "valor": "valor", "dataDocumento": "data_documento",
+    }
+    campos = []
+    valores = []
+    dados = payload.dict()
+    for chave_payload, coluna in mapa.items():
+        if dados.get(chave_payload) is not None:
+            campos.append(f"{coluna} = ?")
+            valores.append(dados[chave_payload])
+
+    # Se a Referência foi editada no formulário de confirmação, recalcula mês/ano
+    # em silêncio (sem campo novo na UI) a partir do texto que o usuário confirmou.
+    if dados.get("referencia") is not None:
+        mes_ref, ano_ref = parse_mes_ano_sem_fallback(dados["referencia"])
+        campos.append("mes_referencia = ?")
+        valores.append(mes_ref)
+        campos.append("ano_referencia = ?")
+        valores.append(ano_ref)
+
+    if campos:
+        valores.append(item_id)
+        conn.execute(f"UPDATE historico_pdfs SET {', '.join(campos)} WHERE id = ?", valores)
+        conn.commit()
+
+    row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
+    conn.close()
+    return {"status": "ok", "item": row_historico_resumo(row)}
+
+@app.get("/historico-pdfs/{item_id}/arquivo")
+def obter_arquivo_historico_pdf(item_id: str, baixar: int = 0):
+    conn = conectar_db()
+    row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
+    conn.close()
+    if not row or not row["tem_arquivo"] or not row["arquivo_nome"]:
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
+
+    caminho = UPLOAD_RELATORIOS_DIR / row["arquivo_nome"]
+    if not caminho.exists():
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
+
+    nome_exibicao = row["arquivo_nome_original"] or row["arquivo_nome"]
+    if baixar:
+        return FileResponse(caminho, media_type="application/pdf", filename=nome_exibicao)
+    return FileResponse(
+        caminho,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{nome_exibicao}"'},
+    )
+
 @app.post("/historico-pdfs")
 def salvar_historico_pdf(payload: HistoricoPdfPayload):
     item_id = payload.id or gerar_id()
     criado_em = datetime.now().isoformat()
     dados_json = json.dumps(payload.dados, ensure_ascii=False) if payload.dados else None
+    mes_ref, ano_ref = parse_mes_ano_sem_fallback(payload.referencia)
     conn = conectar_db()
     conn.execute(
         """INSERT OR REPLACE INTO historico_pdfs
-           (id, tipo, cliente, referencia, valor, criado_em, arquivo_nome, tem_arquivo, dados_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (item_id, payload.tipo, payload.cliente, payload.referencia, payload.valor, criado_em, None, 0, dados_json),
+           (id, tipo, cliente, referencia, valor, criado_em, arquivo_nome, tem_arquivo, dados_json,
+            mes_referencia, ano_referencia)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (item_id, payload.tipo, payload.cliente, payload.referencia, payload.valor, criado_em, None, 0, dados_json,
+         mes_ref, ano_ref),
     )
     conn.commit()
     row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
@@ -438,6 +1052,11 @@ def salvar_historico_pdf(payload: HistoricoPdfPayload):
 @app.delete("/historico-pdfs/{item_id}")
 def excluir_historico_pdf(item_id: str):
     conn = conectar_db()
+    row = conn.execute("SELECT * FROM historico_pdfs WHERE id = ?", (item_id,)).fetchone()
+    if row and row["tem_arquivo"] and row["arquivo_nome"]:
+        caminho = UPLOAD_RELATORIOS_DIR / row["arquivo_nome"]
+        if caminho.exists():
+            caminho.unlink()
     conn.execute("DELETE FROM historico_pdfs WHERE id = ?", (item_id,))
     conn.commit()
     conn.close()
@@ -450,6 +1069,154 @@ def limpar_historico_pdfs():
     conn.commit()
     conn.close()
     return {"status": "ok"}
+
+@app.post("/notas-fiscais/upload")
+async def upload_notas_fiscais(files: List[UploadFile] = File(...)):
+    criados = []
+    erros = []
+    conn = conectar_db()
+    for arquivo in files:
+        conteudo = await arquivo.read()
+        erro = _validar_pdf_upload(conteudo, arquivo.filename or "")
+        if erro:
+            erros.append({"arquivo": arquivo.filename, "erro": erro})
+            continue
+
+        nome_fisico = f"{uuid.uuid4()}.pdf"
+        caminho = UPLOAD_NOTAS_DIR / nome_fisico
+        caminho.write_bytes(conteudo)
+
+        texto = extrair_texto_pdf(caminho)
+        extraido = parse_nfse_sp(texto)
+
+        item_id = gerar_id()
+        criado_em = datetime.now().isoformat()
+
+        conn.execute(
+            """INSERT INTO notas_fiscais
+               (id, numero_nota, cliente, cnpj_tomador, mes_referencia, ano_referencia,
+                data_emissao, vencimento, valor, codigo_verificacao, arquivo_nome,
+                arquivo_nome_original, criado_em, financeiro_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (item_id, extraido["numeroNota"], extraido["cliente"], extraido["cnpjTomador"],
+             extraido["mesReferencia"], extraido["anoReferencia"], extraido["dataEmissao"],
+             extraido["vencimento"], extraido["valor"], extraido["codigoVerificacao"],
+             nome_fisico, arquivo.filename or nome_fisico, criado_em, ""),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
+        item = row_nota_fiscal(row)
+        item["sugestaoFinanceiroId"] = sugerir_financeiro(
+            extraido["cliente"], extraido["valor"], extraido["mesReferencia"], extraido["anoReferencia"]
+        )
+        criados.append(item)
+    conn.close()
+    return {"status": "ok", "itens": criados, "erros": erros}
+
+@app.get("/notas-fiscais")
+def listar_notas_fiscais(mes: Optional[int] = None, ano: Optional[int] = None, cliente: Optional[str] = None):
+    conn = conectar_db()
+    rows = conn.execute("SELECT * FROM notas_fiscais ORDER BY criado_em DESC").fetchall()
+    conn.close()
+    itens = [row_nota_fiscal(r) for r in rows]
+    if mes:
+        itens = [i for i in itens if i["mesReferencia"] == mes]
+    if ano:
+        itens = [i for i in itens if i["anoReferencia"] == ano]
+    if cliente:
+        c = cliente.strip().lower()
+        itens = [i for i in itens if c in i["cliente"].lower()]
+    return {"status": "ok", "notas": itens}
+
+@app.patch("/notas-fiscais/{item_id}")
+def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload):
+    conn = conectar_db()
+    row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"status": "erro", "erro": "Registro não encontrado"}
+
+    mapa = {
+        "numeroNota": "numero_nota", "cliente": "cliente", "cnpjTomador": "cnpj_tomador",
+        "mesReferencia": "mes_referencia", "anoReferencia": "ano_referencia",
+        "dataEmissao": "data_emissao", "vencimento": "vencimento", "valor": "valor",
+        "codigoVerificacao": "codigo_verificacao", "cancelada": "cancelada",
+    }
+    campos = []
+    valores = []
+    dados = payload.dict()
+    for chave_payload, coluna in mapa.items():
+        if dados.get(chave_payload) is not None:
+            valor_gravado = dados[chave_payload]
+            if isinstance(valor_gravado, bool):
+                valor_gravado = 1 if valor_gravado else 0
+            campos.append(f"{coluna} = ?")
+            valores.append(valor_gravado)
+
+    if campos:
+        valores.append(item_id)
+        conn.execute(f"UPDATE notas_fiscais SET {', '.join(campos)} WHERE id = ?", valores)
+        conn.commit()
+
+    row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
+    conn.close()
+    return {"status": "ok", "item": row_nota_fiscal(row)}
+
+@app.get("/notas-fiscais/{item_id}/arquivo")
+def obter_arquivo_nota_fiscal(item_id: str, baixar: int = 0):
+    conn = conectar_db()
+    row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
+    conn.close()
+    if not row or not row["arquivo_nome"]:
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
+
+    caminho = UPLOAD_NOTAS_DIR / row["arquivo_nome"]
+    if not caminho.exists():
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
+
+    nome_exibicao = row["arquivo_nome_original"] or row["arquivo_nome"]
+    if baixar:
+        return FileResponse(caminho, media_type="application/pdf", filename=nome_exibicao)
+    return FileResponse(
+        caminho,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{nome_exibicao}"'},
+    )
+
+@app.delete("/notas-fiscais/{item_id}")
+def excluir_nota_fiscal(item_id: str):
+    conn = conectar_db()
+    row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
+    if row and row["arquivo_nome"]:
+        caminho = UPLOAD_NOTAS_DIR / row["arquivo_nome"]
+        if caminho.exists():
+            caminho.unlink()
+    conn.execute("DELETE FROM notas_fiscais WHERE id = ?", (item_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "id": item_id}
+
+@app.post("/notas-fiscais/{item_id}/vincular")
+def vincular_nota_financeiro(item_id: str, payload: VincularFinanceiroPayload):
+    conn = conectar_db()
+    nota = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
+    lanc = conn.execute("SELECT * FROM financeiro WHERE id = ?", (payload.financeiroId,)).fetchone()
+    if not nota or not lanc:
+        conn.close()
+        return {"status": "erro", "erro": "Nota ou lançamento não encontrado"}
+
+    data_envio = nota["data_emissao"] or datetime.now().strftime("%Y-%m-%d")
+    conn.execute(
+        "UPDATE financeiro SET nota_enviada = 1, nota = ?, data_envio_nota = ? WHERE id = ?",
+        (nota["numero_nota"], data_envio, payload.financeiroId),
+    )
+    conn.execute("UPDATE notas_fiscais SET financeiro_id = ? WHERE id = ?", (payload.financeiroId, item_id))
+    conn.commit()
+
+    lanc_atualizado = conn.execute("SELECT * FROM financeiro WHERE id = ?", (payload.financeiroId,)).fetchone()
+    nota_atualizada = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
+    conn.close()
+    return {"status": "ok", "lancamento": row_financeiro(lanc_atualizado), "item": row_nota_fiscal(nota_atualizada)}
 
 @app.get("/equipe")
 def listar_equipe():

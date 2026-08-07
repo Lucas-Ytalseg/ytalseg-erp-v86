@@ -7,22 +7,27 @@ const AZUL = "#2563eb";
 const VERMELHO = "#dc2626";
 const AMARELO = "#b45309";
 
-type Lancamento = {
+// Nota fiscal emitida, enriquecida pelo backend (/dashboard/financeiro-notas) com o
+// status do lançamento do financeiro correspondente — essa é a fonte da verdade do
+// faturamento no Dashboard (não mais o financeiro direto). "recebido" só quando o
+// lançamento vinculado (direto ou casado por cliente+valor+mês/ano) está "recebido".
+type NotaDashboard = {
   id: string;
   cliente: string;
-  referencia: string;
   valor: number;
-  status: string;
-  dataEmissao: string;
-  dataRecebimento: string;
-  vencimento: string;
-  dataPromessaPagamento: string;
-  notaEnviada: boolean;
-  dataEnvioNota: string;
-  nota: string;
-  observacao: string;
   mesReferencia: number | null;
   anoReferencia: number | null;
+  vencimento: string;
+  statusFinanceiro: "recebido" | "aberto" | "vencido";
+  dataRecebimento: string;
+  financeiroIdResolvido: string | null;
+};
+
+type SemNotaItem = {
+  id: string;
+  cliente: string;
+  valor: number;
+  referencia: string;
 };
 
 type Colaborador = {
@@ -34,14 +39,10 @@ type Colaborador = {
 
 const NOMES_MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
-const STATUS_LABEL: Record<string, string> = {
-  pendente: "Pendente",
-  nota_enviada: "Nota enviada",
-  cobrado: "Cobrado",
-  prometeu_pagar: "Prometeu pagar",
-  negociacao: "Em negociação",
-  aprovado: "Aprovado",
+const STATUS_FINANCEIRO_LABEL: Record<string, string> = {
   recebido: "Recebido",
+  aberto: "Em aberto",
+  vencido: "Vencido",
 };
 
 function brl(v: number) {
@@ -88,7 +89,8 @@ function Cartao({
 
 export default function Dashboard() {
   const agora = new Date();
-  const [financeiro, setFinanceiro] = useState<Lancamento[]>([]);
+  const [notas, setNotas] = useState<NotaDashboard[]>([]);
+  const [semNotaEmitida, setSemNotaEmitida] = useState<SemNotaItem[]>([]);
   const [equipe, setEquipe] = useState<Colaborador[]>([]);
   const [erro, setErro] = useState("");
   const [carregando, setCarregando] = useState(false);
@@ -102,14 +104,17 @@ export default function Dashboard() {
     setCarregando(true);
     try {
       setErro("");
-      const [resFin, resEquipe] = await Promise.all([
-        fetch(`${API_BASE}/financeiro`),
+      const [resDash, resEquipe] = await Promise.all([
+        fetch(`${API_BASE}/dashboard/financeiro-notas`),
         fetch(`${API_BASE}/equipe`).catch(() => null),
       ]);
 
-      const dataFin = await resFin.json();
+      const dataDash = await resDash.json();
 
-      if (dataFin.status === "ok") setFinanceiro(dataFin.lancamentos || []);
+      if (dataDash.status === "ok") {
+        setNotas(dataDash.notas || []);
+        setSemNotaEmitida(dataDash.semNotaEmitida || []);
+      }
 
       if (resEquipe) {
         const dataEquipe = await resEquipe.json();
@@ -129,44 +134,49 @@ export default function Dashboard() {
   const hoje = hojeISO();
 
   const vencidos = useMemo(() => {
-    return financeiro
-      .filter((l) => l.vencimento && l.vencimento < hoje && l.status !== "recebido")
-      .map((l) => ({ ...l, diasAtraso: diasEntre(hoje, l.vencimento) }))
+    return notas
+      .filter((n) => n.statusFinanceiro === "vencido")
+      .map((n) => ({ ...n, diasAtraso: diasEntre(hoje, n.vencimento) }))
       .sort((a, b) => b.diasAtraso - a.diasAtraso);
-  }, [financeiro, hoje]);
+  }, [notas, hoje]);
 
   const vencendoEm7 = useMemo(() => {
     const limite = new Date();
     limite.setDate(limite.getDate() + 7);
     const limiteISO = limite.toISOString().slice(0, 10);
-    return financeiro
-      .filter((l) => l.vencimento && l.vencimento >= hoje && l.vencimento <= limiteISO && l.status !== "recebido")
-      .map((l) => ({ ...l, diasRestantes: diasEntre(l.vencimento, hoje) }))
+    return notas
+      .filter((n) => n.statusFinanceiro === "aberto" && n.vencimento && n.vencimento >= hoje && n.vencimento <= limiteISO)
+      .map((n) => ({ ...n, diasRestantes: diasEntre(n.vencimento, hoje) }))
       .sort((a, b) => a.diasRestantes - b.diasRestantes);
-  }, [financeiro, hoje]);
+  }, [notas, hoje]);
 
   const totalVencidos = useMemo(() => vencidos.reduce((a, x) => a + Number(x.valor || 0), 0), [vencidos]);
   const totalVencendo7 = useMemo(() => vencendoEm7.reduce((a, x) => a + Number(x.valor || 0), 0), [vencendoEm7]);
 
+  const totalSemNotaEmitida = useMemo(
+    () => semNotaEmitida.reduce((a, x) => a + Number(x.valor || 0), 0),
+    [semNotaEmitida]
+  );
+
   const numerosDoMes = useMemo(() => {
-    const itensMes = financeiro.filter(
-      (l) => Number(l.mesReferencia) === mesSelecionado && Number(l.anoReferencia) === anoSelecionado
+    const itensMes = notas.filter(
+      (n) => Number(n.mesReferencia) === mesSelecionado && Number(n.anoReferencia) === anoSelecionado
     );
     const gerado = itensMes.reduce((a, x) => a + Number(x.valor || 0), 0);
     const recebido = itensMes
-      .filter((x) => x.status === "recebido")
+      .filter((x) => x.statusFinanceiro === "recebido")
       .reduce((a, x) => a + Number(x.valor || 0), 0);
     const emAberto = gerado - recebido;
-    const acumuladoAnterior = financeiro
-      .filter((l) => {
-        if (l.status === "recebido") return false;
-        const ano = Number(l.anoReferencia) || 0;
-        const mes = Number(l.mesReferencia) || 0;
+    const acumuladoAnterior = notas
+      .filter((n) => {
+        if (n.statusFinanceiro === "recebido") return false;
+        const ano = Number(n.anoReferencia) || 0;
+        const mes = Number(n.mesReferencia) || 0;
         return ano < anoSelecionado || (ano === anoSelecionado && mes < mesSelecionado);
       })
       .reduce((a, x) => a + Number(x.valor || 0), 0);
     return { gerado, recebido, emAberto, acumuladoAnterior };
-  }, [financeiro, mesSelecionado, anoSelecionado]);
+  }, [notas, mesSelecionado, anoSelecionado]);
 
   const evolucao12Meses = useMemo(() => {
     const meses: { mes: number; ano: number; label: string; gerado: number; recebido: number }[] = [];
@@ -174,32 +184,32 @@ export default function Dashboard() {
       const d = new Date(agora.getFullYear(), agora.getMonth() - i, 1);
       const mes = d.getMonth() + 1;
       const ano = d.getFullYear();
-      const itens = financeiro.filter((l) => Number(l.mesReferencia) === mes && Number(l.anoReferencia) === ano);
+      const itens = notas.filter((n) => Number(n.mesReferencia) === mes && Number(n.anoReferencia) === ano);
       const gerado = itens.reduce((a, x) => a + Number(x.valor || 0), 0);
       const recebido = itens
-        .filter((x) => x.status === "recebido")
+        .filter((x) => x.statusFinanceiro === "recebido")
         .reduce((a, x) => a + Number(x.valor || 0), 0);
       meses.push({ mes, ano, label: `${NOMES_MESES[mes].slice(0, 3)}/${String(ano).slice(2)}`, gerado, recebido });
     }
     return meses;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [financeiro]);
+  }, [notas]);
 
   const anosDisponiveis = useMemo(() => {
-    const anos = new Set<number>(financeiro.map((l) => Number(l.anoReferencia)).filter(Boolean) as number[]);
+    const anos = new Set<number>(notas.map((n) => Number(n.anoReferencia)).filter(Boolean) as number[]);
     anos.add(agora.getFullYear());
     return Array.from(anos).sort((a, b) => b - a);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [financeiro]);
+  }, [notas]);
 
   const resumoAnualClientes = useMemo(() => {
-    const itensAno = financeiro.filter((l) => Number(l.anoReferencia) === anoResumo);
+    const itensAno = notas.filter((n) => Number(n.anoReferencia) === anoResumo);
     const porCliente: Record<string, { gerado: number; recebido: number }> = {};
-    itensAno.forEach((l) => {
-      const nome = l.cliente || "Sem cliente";
+    itensAno.forEach((n) => {
+      const nome = n.cliente || "Sem cliente";
       if (!porCliente[nome]) porCliente[nome] = { gerado: 0, recebido: 0 };
-      porCliente[nome].gerado += Number(l.valor || 0);
-      if (l.status === "recebido") porCliente[nome].recebido += Number(l.valor || 0);
+      porCliente[nome].gerado += Number(n.valor || 0);
+      if (n.statusFinanceiro === "recebido") porCliente[nome].recebido += Number(n.valor || 0);
     });
     return Object.entries(porCliente)
       .map(([cliente, v]) => ({
@@ -210,14 +220,14 @@ export default function Dashboard() {
         pctPago: v.gerado > 0 ? (v.recebido / v.gerado) * 100 : 0,
       }))
       .sort((a, b) => b.gerado - a.gerado);
-  }, [financeiro, anoResumo]);
+  }, [notas, anoResumo]);
 
   const lancamentosClienteExpandido = useMemo(() => {
     if (!clienteExpandido) return [];
-    return financeiro
-      .filter((l) => l.cliente === clienteExpandido && Number(l.anoReferencia) === anoResumo)
+    return notas
+      .filter((n) => n.cliente === clienteExpandido && Number(n.anoReferencia) === anoResumo)
       .sort((a, b) => (b.mesReferencia || 0) - (a.mesReferencia || 0));
-  }, [financeiro, clienteExpandido, anoResumo]);
+  }, [notas, clienteExpandido, anoResumo]);
 
   const equipeAtiva = equipe.filter((e) => e.ativo).length;
   const documentosComValidade = equipe.filter((e) => e.validade);
@@ -380,6 +390,12 @@ export default function Dashboard() {
           <Cartao titulo="Recebido no mês" valor={brl(numerosDoMes.recebido)} tipo="ok" />
           <Cartao titulo="Em aberto no mês" valor={brl(numerosDoMes.emAberto)} tipo={numerosDoMes.emAberto > 0 ? "alerta" : "ok"} />
           <Cartao titulo="Acumulado em aberto (meses anteriores)" valor={brl(numerosDoMes.acumuladoAnterior)} tipo={numerosDoMes.acumuladoAnterior > 0 ? "perigo" : "ok"} />
+          <Cartao
+            titulo="Sem nota emitida"
+            valor={brl(totalSemNotaEmitida)}
+            detalhe={`${semNotaEmitida.length} lançamento(s) do Financeiro sem nota fiscal correspondente`}
+            tipo={semNotaEmitida.length > 0 ? "alerta" : "ok"}
+          />
         </div>
       </div>
 
@@ -458,7 +474,7 @@ export default function Dashboard() {
                               lancamentosClienteExpandido.map((l) => (
                                 <div className="fdash-lista-item" key={l.id}>
                                   <span className="nome">{NOMES_MESES[l.mesReferencia || 0]} — {brl(l.valor)}</span>
-                                  <span className="tag">{STATUS_LABEL[l.status] || l.status}{l.vencimento ? ` · venc. ${curta(l.vencimento)}` : ""}</span>
+                                  <span className="tag">{STATUS_FINANCEIRO_LABEL[l.statusFinanceiro] || l.statusFinanceiro}{l.vencimento ? ` · venc. ${curta(l.vencimento)}` : ""}</span>
                                 </div>
                               ))
                             )}
