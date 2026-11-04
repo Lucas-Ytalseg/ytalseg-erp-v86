@@ -2429,6 +2429,9 @@ def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload, sessao: dic
     for chave_payload, coluna in mapa.items():
         if dados.get(chave_payload) is not None:
             valor_gravado = dados[chave_payload]
+            if isinstance(valor_gravado, str):
+                # V16.2: espaço sobrando no começo/fim fazia o mesmo cliente parecer outro
+                valor_gravado = re.sub(r"\s+", " ", valor_gravado).strip()
             if isinstance(valor_gravado, bool):
                 valor_gravado = 1 if valor_gravado else 0
             campos.append(f"{coluna} = ?")

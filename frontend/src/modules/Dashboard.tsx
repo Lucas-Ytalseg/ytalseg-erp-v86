@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { chaveCliente } from "./shared/clientes";
 
 const API_BASE = "/api";
 
@@ -213,16 +214,20 @@ export default function Dashboard() {
 
   const resumoAnualClientes = useMemo(() => {
     const itensAno = notas.filter((n) => Number(n.anoReferencia) === anoResumo);
-    const porCliente: Record<string, { gerado: number; recebido: number }> = {};
+    // V16.2: mesmo cliente com grafias diferentes (ex: com/sem "ANONIMA", espaço sobrando)
+    // vira uma linha só - agrupa pelo CNPJ ou, sem CNPJ, pelo nome normalizado.
+    const porCliente: Record<string, { cliente: string; gerado: number; recebido: number }> = {};
     itensAno.forEach((n) => {
-      const nome = n.cliente || "Sem cliente";
-      if (!porCliente[nome]) porCliente[nome] = { gerado: 0, recebido: 0 };
-      porCliente[nome].gerado += Number(n.valor || 0);
-      if (statusNota(n, hoje) === "recebida") porCliente[nome].recebido += Number(n.valor || 0);
+      const nome = (n.cliente || "Sem cliente").trim() || "Sem cliente";
+      const chave = chaveCliente(nome, (n as any).cnpjTomador);
+      if (!porCliente[chave]) porCliente[chave] = { cliente: nome, gerado: 0, recebido: 0 };
+      porCliente[chave].gerado += Number(n.valor || 0);
+      if (statusNota(n, hoje) === "recebida") porCliente[chave].recebido += Number(n.valor || 0);
     });
     return Object.entries(porCliente)
-      .map(([cliente, v]) => ({
-        cliente,
+      .map(([chave, v]) => ({
+        chave,
+        cliente: v.cliente,
         gerado: v.gerado,
         recebido: v.recebido,
         emAberto: v.gerado - v.recebido,
@@ -234,7 +239,7 @@ export default function Dashboard() {
   const lancamentosClienteExpandido = useMemo(() => {
     if (!clienteExpandido) return [];
     return notas
-      .filter((n) => n.cliente === clienteExpandido && Number(n.anoReferencia) === anoResumo)
+      .filter((n) => chaveCliente((n.cliente || "Sem cliente").trim() || "Sem cliente", (n as any).cnpjTomador) === clienteExpandido && Number(n.anoReferencia) === anoResumo)
       .sort((a, b) => (b.mesReferencia || 0) - (a.mesReferencia || 0));
   }, [notas, clienteExpandido, anoResumo]);
 
@@ -509,10 +514,10 @@ export default function Dashboard() {
                 </thead>
                 <tbody>
                   {resumoAnualClientes.map((c) => (
-                    <React.Fragment key={c.cliente}>
+                    <React.Fragment key={c.chave}>
                       <tr
                         className="fdash-clicavel"
-                        onClick={() => setClienteExpandido(clienteExpandido === c.cliente ? "" : c.cliente)}
+                        onClick={() => setClienteExpandido(clienteExpandido === c.chave ? "" : c.chave)}
                       >
                         <td>{c.cliente}</td>
                         <td>{brl(c.gerado)}</td>
@@ -523,7 +528,7 @@ export default function Dashboard() {
                           <div className="fdash-barra-pct"><div className="fdash-barra-pct-fill" style={{ width: `${Math.min(100, c.pctPago)}%` }} /></div>
                         </td>
                       </tr>
-                      {clienteExpandido === c.cliente && (
+                      {clienteExpandido === c.chave && (
                         <tr className="fdash-sub-linha">
                           <td colSpan={5}>
                             {lancamentosClienteExpandido.length === 0 ? (
