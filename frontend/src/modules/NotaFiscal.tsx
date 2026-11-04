@@ -52,7 +52,7 @@ type Lancamento = {
 
 type VinculoInfo = { vinculoId?: string; notaId?: string; historicoPdfId?: string };
 
-type DocResumo = { id: string; temArquivo: boolean };
+type DocResumo = { id: string; temArquivo: boolean; temDados?: boolean };
 
 type NotaForm = {
   cliente: string;
@@ -112,7 +112,7 @@ const vazio: NotaForm = {
   statusNota: "preparada",
 };
 
-export default function NotaFiscal() {
+export default function NotaFiscal({ onAbrirRelatorio }: { onAbrirRelatorio?: () => void } = {}) {
   // V16.3: a tela ficava muito comprida com as 4 partes juntas - agora cada parte
   // abre pelo seu botão. As partes escondidas continuam montadas (display:none),
   // então nada se perde ao trocar de botão (ex: nota subida esperando confirmação).
@@ -173,7 +173,7 @@ export default function NotaFiscal() {
       if (resHist) {
         const dataHist = await resHist.json();
         if (dataHist.status === "ok") {
-          setHistoricoPdfs((dataHist.historico || []).map((h: any) => ({ id: h.id, temArquivo: !!h.temArquivo })));
+          setHistoricoPdfs((dataHist.historico || []).map((h: any) => ({ id: h.id, temArquivo: !!h.temArquivo, temDados: !!h.temDados })));
         }
       }
     } catch {
@@ -322,13 +322,15 @@ ${form.descricao}
       let candidatos: any[] = data.status === "ok" ? (tipo === "nota" ? data.candidatosNota : data.candidatosHistorico) || [] : [];
       // Só mostra quem realmente tem arquivo anexado - vincular um registro sem PDF
       // (só dados, sem upload) cria o vínculo mas nunca vai ter o que visualizar.
-      candidatos = candidatos.filter((c: any) => c.temArquivo);
+      // Relatório feito no ERP só tem os dados (sem PDF) e também pode ser vinculado.
+      const temConteudo = (c: any) => c.temArquivo || (tipo === "relatorio" && c.temDados);
+      candidatos = candidatos.filter(temConteudo);
       if (candidatos.length === 0) {
         // Sem sugestão automática (cliente/valor não bateram) - mostra a lista completa,
         // o backend recusa com mensagem clara se o item escolhido já estiver vinculado.
         const resTudo = await fetch(tipo === "nota" ? `${API_BASE}/notas-fiscais` : `${API_BASE}/historico-pdfs`);
         const dataTudo = await resTudo.json();
-        candidatos = (tipo === "nota" ? dataTudo.notas || [] : dataTudo.historico || []).filter((c: any) => c.temArquivo);
+        candidatos = (tipo === "nota" ? dataTudo.notas || [] : dataTudo.historico || []).filter(temConteudo);
       }
       setCandidatosVinculo(candidatos);
     } catch (err) {
@@ -386,6 +388,26 @@ ${form.descricao}
       setErro(`Erro ao desvincular: ${err}`);
     } finally {
       setVinculando(false);
+    }
+  }
+
+  // Relatório feito no próprio ERP não tem PDF guardado, só os dados (o PDF sai pela
+  // impressão). Pra "ver", reabre ele na aba Relatórios - mesmo caminho do
+  // "Reabrir/Reimprimir" do Histórico de PDFs (chave lida pelo Relatorios.tsx).
+  async function reabrirRelatorio(id: string) {
+    setErro("");
+    try {
+      const res = await fetch(`${API_BASE}/historico-pdfs/${id}`);
+      const data = await res.json();
+      if (data.status !== "ok" || !data.item?.dados) {
+        setErro("Não consegui carregar os dados deste relatório.");
+        return;
+      }
+      localStorage.setItem("ytalseg_reabrir_relatorio_pendente", JSON.stringify(data.item.dados));
+      if (onAbrirRelatorio) onAbrirRelatorio();
+      else setErro("Relatório carregado. Abra a aba Relatórios para ver.");
+    } catch (err) {
+      setErro(`Erro ao abrir o relatório: ${err}`);
     }
   }
 
@@ -631,6 +653,11 @@ ${form.descricao}
                           {carregandoArquivo === `relatorio-${historico.id}` ? "Abrindo..." : "Ver relatório"}
                         </button>
                       )}
+                      {historico && !historico.temArquivo && historico.temDados && (
+                        <button className="btn-gray" onClick={() => reabrirRelatorio(historico.id)} title="Abre o relatório na aba Relatórios (de lá dá pra ver e imprimir)">
+                          Ver relatório
+                        </button>
+                      )}
                       {vinculosFinanceiro[l.id]?.vinculoId && vinculosFinanceiro[l.id]?.notaId && (
                         <button className="btn-gray" disabled={vinculando} onClick={() => desvincular(l.id, "nota")} title="Tira a nota deste lançamento sem apagar nada">
                           Desvincular nota
@@ -641,12 +668,12 @@ ${form.descricao}
                           Desvincular relatório
                         </button>
                       )}
-                      {!nota?.temArquivo && (
+                      {!nota && (
                         <button className="btn-gray" onClick={() => abrirVincular(l.id, "nota")}>
                           {pickerVinculo?.lancId === l.id && pickerVinculo.tipo === "nota" ? "Fechar" : "Vincular nota"}
                         </button>
                       )}
-                      {!historico?.temArquivo && (
+                      {!historico && (
                         <button className="btn-gray" onClick={() => abrirVincular(l.id, "relatorio")}>
                           {pickerVinculo?.lancId === l.id && pickerVinculo.tipo === "relatorio" ? "Fechar" : "Vincular relatório"}
                         </button>

@@ -733,7 +733,7 @@ export default function App() {
           {menu === "clientes" && <Clientes />}
           {menu === "financeiro" && <Financeiro />}
           {menu === "equipe" && <Equipe />}
-          {menu === "notafiscal" && <NotaFiscal />}
+          {menu === "notafiscal" && <NotaFiscal onAbrirRelatorio={() => setMenu("relatorios")} />}
           {menu === "cobranca" && <Cobranca />}
           {menu === "configuracoes" && <Configuracoes />}
           {menu === "historico-pdfs" && <HistoricoPDFs onAbrirRelatorio={() => setMenu("relatorios")} />}

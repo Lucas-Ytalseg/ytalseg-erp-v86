@@ -694,7 +694,9 @@ export default function Financeiro() {
   return (
     <div className="page">
       <style>{`
-        .page{display:grid;gap:18px}
+        /* container-type: os ajustes de "tela estreita" abaixo olham a LARGURA QUE SOBRA
+           pra esta tela (descontando o menu), não a largura da janela inteira. */
+        .page{display:grid;gap:18px;container-type:inline-size}
         .head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
         .head h1{margin:0;font-size:30px;font-weight:1000}
         .filtros{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -705,7 +707,9 @@ export default function Financeiro() {
         .box{overflow-x:auto}
         table{width:100%;border-collapse:collapse;font-size:13px}
         th{background:#f9fafb;text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;white-space:nowrap}
-        td{padding:10px;border-bottom:1px solid #edf0f2;vertical-align:top}
+        td{padding:10px;border-bottom:1px solid #edf0f2;vertical-align:top;white-space:nowrap}
+        td[data-label="Cliente"]{white-space:normal;min-width:140px}
+        td[data-label="Ações"] .actions{flex-wrap:nowrap}
         .btn{border:0;padding:8px 10px;border-radius:10px;cursor:pointer;font-weight:900;background:#e5e7eb}
         .btn-green{background:${VERDE};color:#fff}
         .btn-red{background:#fee2e2;color:#991b1b}
@@ -739,8 +743,13 @@ export default function Financeiro() {
         .exportar-caixa{background:#fff;border-radius:18px;padding:20px;max-width:520px;width:100%;display:grid;gap:12px}
         .exportar-caixa pre{white-space:pre-wrap;font-family:inherit;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px;max-height:340px;overflow:auto}
 
-        @media(max-width:900px){
+        /* Pouco espaço (meia tela, celular): cada lançamento vira um cartão, sem rolar pro lado. */
+        @container (max-width:700px){
           .cards{grid-template-columns:1fr}
+        }
+        @container (max-width:1050px){
+          td{white-space:normal}
+          td[data-label="Ações"] .actions{flex-wrap:wrap}
           .painel-novo{grid-template-columns:1fr 1fr}
           .form-edicao{grid-template-columns:1fr}
           .exportar-linha{gap:8px}
@@ -754,6 +763,11 @@ export default function Financeiro() {
           td{border-bottom:none}
           td[data-label]::before{content:attr(data-label);display:block;font-size:11px;font-weight:1000;color:#9ca3af;margin-bottom:2px}
           .linha-edicao td{padding:10px}
+          /* cartão compacto: os dados curtos lado a lado; cliente e botões ocupam a linha toda */
+          tbody tr{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));column-gap:8px}
+          tbody tr.linha-edicao{display:block}
+          td[data-label="Cliente"],td[data-label="Ações"],td.vazio{grid-column:1 / -1}
+          td{padding:6px 10px}
         }
       `}</style>
 
