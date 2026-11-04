@@ -322,25 +322,24 @@ export default function NotasFiscaisEmitidas({
     });
   }, [lista, busca, mesFiltro, anoFiltro, clienteFiltro, statusFiltro]);
 
-  // V16.4: ordem pela DATA DE EMISSÃO (mais recente primeiro por padrão) e, no mesmo
-  // dia, pelo número da nota. Assim a numeração fica em sequência (868, 867, 866...) e a
-  // nota nº 1 do Emissor Nacional aparece no topo por ser a mais recente — mesmo com a
-  // numeração tendo recomeçado. Notas sem mês/ano de referência continuam numa seção
-  // separada no final (pra você ver que falta preencher), com a mesma ordem.
+  // V16.5: ordem pelo NÚMERO DA NOTA, separado por padrão. A numeração recomeçou do 1
+  // no Emissor Nacional, então as notas novas ficam num bloco (5, 4, 3, 2, 1) e as
+  // antigas da Prefeitura em outro (868, 867, 866...). "Mais recentes primeiro" mostra
+  // o bloco novo em cima; "Mais antigas primeiro" inverte tudo. Notas sem mês/ano de
+  // referência continuam numa seção separada no final, com a mesma ordem.
   const gruposOrdenados = useMemo(() => {
     const comReferencia = filtrados.filter((i) => i.mesReferencia && i.anoReferencia);
     const semReferencia = filtrados.filter((i) => !i.mesReferencia || !i.anoReferencia);
     const dir = ordemAscendente ? 1 : -1;
     const numero = (i: NotaFiscalItem) => Number(String(i.numeroNota || "").replace(/\D/g, "")) || 0;
+    // bloco mais novo = número maior: nacional (2) > Prefeitura SP antiga (1) > preenchida à mão (0)
+    const bloco = (i: NotaFiscalItem) =>
+      i.padraoNota === "nacional_danfse" ? 2 : i.padraoNota === "manual" ? 0 : 1;
 
     const porEmissao = (a: NotaFiscalItem, b: NotaFiscalItem) => {
-      const ea = a.dataEmissao || "";
-      const eb = b.dataEmissao || "";
-      if (ea !== eb) {
-        if (!ea) return 1; // sem data de emissão vai pro fim
-        if (!eb) return -1;
-        return dir * ea.localeCompare(eb);
-      }
+      const ba = bloco(a);
+      const bb = bloco(b);
+      if (ba !== bb) return dir * (ba - bb);
       const na = numero(a);
       const nb = numero(b);
       if (na !== nb) return dir * (na - nb);
