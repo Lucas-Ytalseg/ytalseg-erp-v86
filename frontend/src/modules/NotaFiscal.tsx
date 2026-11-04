@@ -113,6 +113,10 @@ const vazio: NotaForm = {
 };
 
 export default function NotaFiscal() {
+  // V16.3: a tela ficava muito comprida com as 4 partes juntas - agora cada parte
+  // abre pelo seu botão. As partes escondidas continuam montadas (display:none),
+  // então nada se perde ao trocar de botão (ex: nota subida esperando confirmação).
+  const [aba, setAba] = useState<"lancamentos" | "previa" | "historico" | "emitidas">("emitidas");
   const [clientes, setClientes] = useState<Cliente[]>([]);
   const [financeiro, setFinanceiro] = useState<Lancamento[]>([]);
   const [form, setForm] = useState<NotaForm>({ ...vazio });
@@ -409,21 +413,38 @@ ${form.descricao}
         .modal-linha { display:grid; grid-template-columns:160px 1fr; gap:10px; padding:9px 0; border-bottom:1px solid #f1f5f9; font-size:13px; }
         .modal-linha strong { color:#374151; font-weight:1000; }
         .modal-linha span { color:#111827; font-weight:700; white-space:pre-wrap; }
+        .abas-nf { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px; }
+        .aba-nf { border:1px solid #d1d5db; background:#fff; color:#111827; font-weight:900; padding:10px 16px; border-radius:12px; cursor:pointer; font-size:14px; }
+        .aba-nf.ativa { background:${VERDE}; border-color:${VERDE}; color:#fff; box-shadow:0 8px 18px rgba(0,176,80,.22); }
+        @media(max-width:600px){ .aba-nf { flex:1 1 45%; padding:10px 8px; } }
         @media(max-width:1000px){ .grid,.rows{grid-template-columns:1fr;} }
         @media(max-width:600px){ .modal-linha{grid-template-columns:1fr;} }
       `}</style>
 
       <div className="head">
         <div>
-          <h1>Pré-Emissão NFS-e — Emissor Nacional</h1>
-          <p>Prepare dados da nota a partir do relatório aprovado e financeiro.</p>
+          <h1>Nota Fiscal — Emissor Nacional</h1>
+          <p>Prepare, consulte e guarde as notas fiscais. Use os botões abaixo para trocar de parte.</p>
         </div>
         <button className="btn-primary" onClick={abrirPortal}>Abrir Emissor Nacional (nfse.gov.br)</button>
       </div>
 
       {erro && <div className="box" style={{color:"#b91c1c",fontWeight:900}}>{erro}</div>}
 
-      <div className="grid">
+      <div className="abas-nf">
+        {([
+          ["lancamentos", "Lançamentos / Dados"],
+          ["previa", "Prévia do pacote"],
+          ["historico", "Histórico de notas"],
+          ["emitidas", "Notas Fiscais Emitidas"],
+        ] as const).map(([id, rotulo]) => (
+          <button key={id} className={`aba-nf${aba === id ? " ativa" : ""}`} onClick={() => setAba(id)}>
+            {rotulo}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid" style={{ display: aba === "lancamentos" ? undefined : "none" }}>
         <div className="box">
           <h2>Lançamentos pendentes</h2>
           <div className="field">
@@ -546,7 +567,7 @@ ${form.descricao}
         </div>
       </div>
 
-      <div className="box">
+      <div className="box" style={{ display: aba === "historico" ? undefined : "none" }}>
         <h2>Histórico de notas e pendências</h2>
         <table className="mini-table">
           <thead>
@@ -644,9 +665,11 @@ ${form.descricao}
         </table>
       </div>
 
-      <NotasFiscaisEmitidas refrescarTick={tick} onMudou={carregar} />
+      <div style={{ display: aba === "emitidas" ? undefined : "none" }}>
+        <NotasFiscaisEmitidas refrescarTick={tick} onMudou={carregar} />
+      </div>
 
-      <div className="box">
+      <div className="box" style={{ display: aba === "previa" ? undefined : "none" }}>
         <h2>Prévia do pacote para o portal</h2>
         <div className="preview">
 {`TOMADOR:
