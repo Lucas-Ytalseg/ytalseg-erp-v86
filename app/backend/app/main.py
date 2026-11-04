@@ -18,6 +18,8 @@ import uuid
 from fastapi import Header
 import secrets
 import hashlib
+import unicodedata
+import difflib
 
 app = FastAPI(title="YTALSEG Backend", version="8.0.0 PROFISSIONAL")
 
@@ -63,6 +65,11 @@ UPLOAD_RELATORIOS_DIR.mkdir(parents=True, exist_ok=True)
 
 UPLOAD_NOTAS_DIR = UPLOAD_DIR / "notas"
 UPLOAD_NOTAS_DIR.mkdir(parents=True, exist_ok=True)
+
+# V16: PDFs cuja extração ficou incompleta esperam aqui até o admin completar os dados
+# à mão (nenhum registro é criado no banco antes disso).
+UPLOAD_NOTAS_PENDENTES_DIR = UPLOAD_NOTAS_DIR / "_pendentes"
+UPLOAD_NOTAS_PENDENTES_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_UPLOAD_SIZE = 15 * 1024 * 1024  # 15 MB
 
@@ -424,23 +431,291 @@ def parse_nfse_sp(texto: str):
     if m_valor:
         dados["valor"] = _valor_brl_para_float(m_valor.group(1))
 
-    m_mes = re.search(r"M[ÊE]S DE\s+([A-ZÇÃÕÁÉÍÓÚ]+)\s+DE\s+(\d{4})", texto_limpo, re.IGNORECASE)
-    if m_mes:
-        mes_num = MESES_PT.get(m_mes.group(1).strip().lower())
-        if mes_num:
-            dados["mesReferencia"] = mes_num
-            dados["anoReferencia"] = int(m_mes.group(2))
+    # V16: mês de referência e vencimento vêm SEMPRE do texto da discriminação
+    # ("DURANTE O MÊS DE SETEMBRO DE 2026. VENCIMENTO 05/10/2026") — nunca da data de
+    # emissão (nota emitida em outubro refere-se a setembro).
+    mes, ano, venc = _extrair_referencia_e_vencimento(texto_limpo)
+    dados["mesReferencia"], dados["anoReferencia"] = mes, ano
+    dados["vencimento"] = venc
 
-    m_venc = re.search(r"VENCIMENTO\s+(\d{2}/\d{2}/\d{4})", texto_limpo, re.IGNORECASE)
-    if m_venc:
-        dados["vencimento"] = _data_br_para_iso(m_venc.group(1))
+    # V16: campos novos (o padrão antigo também traz um identificador nacional de 50 dígitos)
+    m_chave = re.search(r"Identificador Nacional:?\s*(\d{50})", texto_limpo, re.IGNORECASE)
+    dados["chaveAcesso"] = m_chave.group(1) if m_chave else ""
+    m_cod = re.search(r"C[óo]digo do Servi[çc]o\s*\n?\s*(\d{4,5})\b", texto_limpo, re.IGNORECASE)
+    dados["codigoTributacao"] = m_cod.group(1) if m_cod else ""
+    dados["cliente"] = _corrigir_mojibake(dados["cliente"])
 
     return dados
 
-def _cliente_bate(a, b) -> bool:
-    a = (a or "").strip().lower()
-    b = (b or "").strip().lower()
-    return bool(a) and bool(b) and (a in b or b in a)
+# ===== V16: NFS-e PADRÃO NACIONAL (DANFSe v2.0 — Emissor Nacional, nfse.gov.br) =====
+PADRAO_SP = "sp_prefeitura"
+PADRAO_NACIONAL = "nacional_danfse"
+PADRAO_MANUAL = "manual"
+
+_MESES_REGEX = "JANEIRO|FEVEREIRO|MARCO|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO"
+
+def _sem_acento(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", s or "") if not unicodedata.combining(c))
+
+def _corrigir_mojibake(s: str) -> str:
+    """Conserta texto UTF-8 que foi lido como Latin-1/CP1252 (ex: 'AUTOMAÃ‡ÃƒO' -> 'AUTOMAÇÃO').
+    Só mexe em palavras que tenham a 'assinatura' desse erro (Ã/Â seguido de um caractere
+    de continuação), e só aceita a troca se a decodificação der certo — nunca piora o texto."""
+    if not s or not re.search(r"[ÃÂ][\u0080-¿ŒœŠšŸŽžƒˆ˜–-›€™]", s):
+        return s
+
+    def _tentar(m):
+        palavra = m.group(0)
+        for codec in ("cp1252", "latin-1"):
+            try:
+                return palavra.encode(codec).decode("utf-8")
+            except Exception:
+                continue
+        return palavra
+
+    return re.sub(r"\S+", _tentar, s)
+
+def _extrair_referencia_e_vencimento(texto: str):
+    """Mês/ano de referência e vencimento a partir do texto da descrição do serviço.
+    Funciona com e sem espaços entre as palavras ('MÊS DE OUTUBRO DE 2026' ou
+    'MÊSDEOUTUBRODE2026') e com/sem acento. Devolve (None, None, '') se não achar —
+    nunca chuta a data de emissão."""
+    t = _sem_acento(texto or "").upper()
+    mes = ano = None
+    m = re.search(rf"MES\s*DE\s*({_MESES_REGEX})\s*(?:DE|/)?\s*(20\d{{2}})", t)
+    if m:
+        mes = MESES_PT.get(m.group(1).lower())
+        ano = int(m.group(2))
+    venc = ""
+    m_v = re.search(r"VENCIMENTO\s*(?:EM|:)?\s*(\d{2}/\d{2}/\d{4})", t)
+    if m_v:
+        venc = _data_br_para_iso(m_v.group(1))
+    return mes, ano, venc
+
+def detectar_padrao_nfse(texto: str) -> str:
+    """Identifica o layout da nota pelos marcadores fixos de cada padrão. Compara sem
+    espaços e sem acento (o PDF nacional sai com as palavras grudadas)."""
+    t = re.sub(r"\s+", "", _sem_acento(texto or "").upper())
+    if "DANFSE" in t and ("DOCUMENTOAUXILIARDANFS-E" in t or "CHAVEDEACESSODANFS-E" in t):
+        return PADRAO_NACIONAL
+    if "PREFEITURADOMUNICIPIODESAOPAULO" in t and "NOTAFISCALELETRONICADESERVICOS" in t:
+        return PADRAO_SP
+    return ""
+
+def _norm_rotulo(s: str) -> str:
+    s = _sem_acento(s or "").upper()
+    s = re.sub(r"\s*/\s*", " / ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+def _linhas_grade_pdf(caminho: Path) -> list:
+    """Lê o PDF como uma grade: lista de linhas, cada linha = lista de células
+    {x0, texto}. Células são separadas por espaços horizontais grandes (> 6pt) — o
+    DANFSe é uma tabela de 4 colunas, com o rótulo numa linha e o valor logo abaixo."""
+    linhas = []
+    try:
+        with pdfplumber.open(caminho) as pdf:
+            for pagina in pdf.pages:
+                palavras = sorted(pagina.extract_words(x_tolerance=1), key=lambda w: (w["top"], w["x0"]))
+                grupos, atual, top_atual = [], [], None
+                for w in palavras:
+                    if top_atual is None or abs(w["top"] - top_atual) > 2.5:
+                        if atual:
+                            grupos.append(atual)
+                        atual, top_atual = [w], w["top"]
+                    else:
+                        atual.append(w)
+                if atual:
+                    grupos.append(atual)
+                for g in grupos:
+                    g.sort(key=lambda w: w["x0"])
+                    celulas = []
+                    for w in g:
+                        if celulas and w["x0"] - celulas[-1]["x1"] <= 6:
+                            celulas[-1]["texto"] += " " + w["text"]
+                            celulas[-1]["x1"] = w["x1"]
+                        else:
+                            celulas.append({"x0": w["x0"], "x1": w["x1"], "texto": w["text"]})
+                    linhas.append(celulas)
+    except Exception:
+        return []
+    return linhas
+
+def _valor_abaixo(linhas: list, rotulo: str, a_partir: int = 0):
+    """Procura a célula cujo texto é EXATAMENTE o rótulo (comparação exata, nunca por
+    pedaço — 'VALOR LÍQUIDO DA NFS-e' não casa com 'VALOR LÍQUIDO DA NFS-e + IBS/CBS')
+    e devolve (índice da linha, texto da célula alinhada na linha de baixo)."""
+    alvo = _norm_rotulo(rotulo)
+    for i in range(a_partir, len(linhas)):
+        celulas = linhas[i]
+        for j, c in enumerate(celulas):
+            if _norm_rotulo(c["texto"]) != alvo:
+                continue
+            x_ini = c["x0"] - 5
+            x_fim = celulas[j + 1]["x0"] - 5 if j + 1 < len(celulas) else float("inf")
+            if i + 1 >= len(linhas):
+                return i, ""
+            for v in linhas[i + 1]:
+                if x_ini <= v["x0"] < x_fim:
+                    return i, v["texto"].strip()
+            return i, ""
+    return -1, ""
+
+def _indice_linha_com(linhas: list, rotulo: str, a_partir: int = 0) -> int:
+    alvo = _norm_rotulo(rotulo)
+    for i in range(a_partir, len(linhas)):
+        if any(_norm_rotulo(c["texto"]) == alvo for c in linhas[i]):
+            return i
+    return -1
+
+def _valor_monetario(celula: str):
+    m = re.search(r"R\$\s*([\d.]+,\d{2})", celula or "")
+    return _valor_brl_para_float(m.group(1)) if m else None
+
+def parse_danfse_nacional(caminho: Path):
+    """Extrai os campos de um DANFSe v2.0 (Emissor Nacional). Nunca lança exceção."""
+    dados = {
+        "numeroNota": "", "cliente": "", "cnpjTomador": "", "mesReferencia": None,
+        "anoReferencia": None, "dataEmissao": "", "vencimento": "", "valor": 0.0,
+        "codigoVerificacao": "", "chaveAcesso": "", "codigoTributacao": "",
+        "competencia": "", "situacao": "", "avisos": [],
+    }
+    linhas = _linhas_grade_pdf(caminho)
+    if not linhas:
+        return dados
+
+    _, numero = _valor_abaixo(linhas, "NÚMERO DA NFS-e")
+    if re.fullmatch(r"\d{1,15}", numero or ""):
+        dados["numeroNota"] = numero
+
+    _, chave = _valor_abaixo(linhas, "CHAVE DE ACESSO DA NFS-e")
+    m_chave = re.search(r"\d{50}", chave or "")
+    if m_chave:
+        dados["chaveAcesso"] = m_chave.group(0)
+
+    _, competencia = _valor_abaixo(linhas, "COMPETÊNCIA DA NFS-e")
+    m = re.search(r"\d{2}/\d{2}/\d{4}", competencia or "")
+    if m:
+        dados["competencia"] = _data_br_para_iso(m.group(0))
+
+    _, emissao = _valor_abaixo(linhas, "DATA E HORA DA EMISSÃO DA NFS-e")
+    m = re.search(r"\d{2}/\d{2}/\d{4}", emissao or "")
+    if m:
+        dados["dataEmissao"] = _data_br_para_iso(m.group(0))
+
+    _, situacao = _valor_abaixo(linhas, "SITUAÇÃO DA NFS-e")
+    dados["situacao"] = situacao
+
+    # Tomador: os rótulos "CNPJ / CPF / NIF" e "Nome / Nome Empresarial" aparecem também
+    # no bloco do prestador — por isso a busca começa na linha do "TOMADOR / ADQUIRENTE".
+    i_tomador = _indice_linha_com(linhas, "TOMADOR / ADQUIRENTE")
+    if i_tomador >= 0:
+        _, cnpj = _valor_abaixo(linhas, "CNPJ / CPF / NIF", i_tomador)
+        if re.search(r"\d", cnpj or ""):
+            dados["cnpjTomador"] = cnpj
+        i_nome, nome = _valor_abaixo(linhas, "Nome / Nome Empresarial", i_tomador)
+        # nome comprido pode quebrar em mais uma linha (só a 1ª coluna preenchida)
+        if nome and 0 <= i_nome and i_nome + 2 < len(linhas):
+            prox = linhas[i_nome + 2]
+            if len(prox) == 1 and _norm_rotulo(prox[0]["texto"]) not in ("ENDERECO", "ENDERECO E-MAIL"):
+                if abs(prox[0]["x0"] - linhas[i_nome + 1][0]["x0"]) < 5:
+                    nome = f"{nome} {prox[0]['texto']}"
+        dados["cliente"] = _corrigir_mojibake(re.sub(r"\s+", " ", nome or "").strip())
+
+    _, cod_trib = _valor_abaixo(linhas, "Código de Tributação Nacional/Municipal")
+    if cod_trib and cod_trib != "-":
+        dados["codigoTributacao"] = re.sub(r"\s*/\s*", " / ", cod_trib)
+
+    # Armadilha do valor: só rótulos EXATOS. "VALOR LÍQUIDO DA NFS-e + IBS/CBS" (vem
+    # R$ 0,00) é outra célula e nunca é lida. Prioridade: valor da operação (bruto, igual
+    # ao "VALOR TOTAL DO SERVIÇO" do padrão antigo, que é o que o Financeiro usa).
+    _, v_oper = _valor_abaixo(linhas, "VALOR DA OPERAÇÃO / SERVIÇO")
+    _, v_total = _valor_abaixo(linhas, "VALOR TOTAL DA NFS-e")
+    _, v_liq = _valor_abaixo(linhas, "VALOR LÍQUIDO DA NFS-e")
+    oper, total, liq = _valor_monetario(v_oper), _valor_monetario(v_total), _valor_monetario(v_liq)
+    valor = next((v for v in (oper, total, liq) if v), 0.0)
+    dados["valor"] = valor or 0.0
+    if valor and liq and abs(liq - valor) >= 0.01:
+        dados["avisos"].append(
+            f"Valor líquido da nota (R$ {liq:.2f}) é diferente do valor do serviço (R$ {valor:.2f}) — houve retenção. Confira."
+        )
+
+    # Mês de referência e vencimento: só do texto da descrição do serviço
+    texto_espacado = "\n".join(" ".join(c["texto"] for c in l) for l in linhas)
+    m_desc = re.search(r"Descri[çc][ãa]o do Servi[çc]o(.*?)(?:TRIBUTA[ÇC][ÃA]O MUNICIPAL|$)", texto_espacado, re.DOTALL | re.IGNORECASE)
+    descricao = m_desc.group(1) if m_desc else texto_espacado
+    mes, ano, venc = _extrair_referencia_e_vencimento(descricao)
+    dados["mesReferencia"], dados["anoReferencia"], dados["vencimento"] = mes, ano, venc
+    return dados
+
+def extrair_nfse(caminho: Path) -> dict:
+    """Detecta o padrão da nota e aplica o extrator certo. Sempre devolve um dict com
+    'padrao' ('' quando não reconheceu) e os campos (vazios quando não achou)."""
+    texto = extrair_texto_pdf(caminho)
+    padrao = detectar_padrao_nfse(texto)
+    if padrao == PADRAO_NACIONAL:
+        dados = parse_danfse_nacional(caminho)
+    elif padrao == PADRAO_SP:
+        dados = parse_nfse_sp(texto)
+        dados.setdefault("competencia", "")
+        dados.setdefault("situacao", "")
+        dados.setdefault("avisos", [])
+    else:
+        dados = parse_nfse_sp("")
+        dados.update({"chaveAcesso": "", "codigoTributacao": "", "competencia": "", "situacao": "", "avisos": []})
+    dados["padrao"] = padrao
+    return dados
+
+def campos_essenciais_faltando(dados: dict) -> list:
+    """Uma nota só é gravada com número, cliente, valor > 0 e mês/ano de referência.
+    Registro vazio (cliente '-', R$ 0,00) é pior que um erro visível."""
+    faltando = []
+    if not str(dados.get("numeroNota") or "").strip():
+        faltando.append("número da nota")
+    if not str(dados.get("cliente") or "").strip():
+        faltando.append("cliente")
+    try:
+        valor_ok = float(dados.get("valor") or 0) > 0
+    except Exception:
+        valor_ok = False
+    if not valor_ok:
+        faltando.append("valor (veio zero ou vazio)")
+    if not dados.get("mesReferencia") or not dados.get("anoReferencia"):
+        faltando.append("mês/ano de referência")
+    return faltando
+
+def _so_digitos(s) -> str:
+    return re.sub(r"\D", "", str(s or ""))
+
+_SUFIXOS_SOCIETARIOS = {"LTDA", "ME", "EPP", "SA", "EIRELI", "MEI"}
+
+def normalizar_nome_cliente(nome: str) -> str:
+    """Forma canônica do nome pra comparação: sem acento, maiúsculo, sem pontuação,
+    sem espaços duplicados e sem sufixos societários (LTDA, ME, EPP, S/A, S.A., EIRELI)."""
+    s = _sem_acento(_corrigir_mojibake(nome or "")).upper()
+    s = re.sub(r"\bS\s*[/.]\s*A\b\.?", " SA ", s)
+    s = s.replace("SOCIEDADE ANONIMA", " SA ")
+    s = re.sub(r"[^A-Z0-9 ]+", " ", s)
+    palavras = s.split()
+    while palavras and palavras[-1] in _SUFIXOS_SOCIETARIOS:
+        palavras.pop()
+    return " ".join(palavras)
+
+def _cliente_bate(a, b, cnpj_a: str = "", cnpj_b: str = "") -> bool:
+    """Mesmo cliente? 1º pelo CNPJ (quando os dois lados têm), 2º pelo nome normalizado
+    (substring nos dois sentidos, como antes), 3º tolerância a erro de digitação na 1ª
+    palavra (ex: BAGERTECH x BARGETECH)."""
+    da, db = _so_digitos(cnpj_a), _so_digitos(cnpj_b)
+    if len(da) >= 11 and len(db) >= 11:
+        return da == db
+    na, nb = normalizar_nome_cliente(a), normalizar_nome_cliente(b)
+    if not na or not nb:
+        return False
+    if na in nb or nb in na:
+        return True
+    pa, pb = na.split()[0], nb.split()[0]
+    if len(pa) >= 6 and len(pb) >= 6 and difflib.SequenceMatcher(None, pa, pb).ratio() >= 0.85:
+        return True
+    return False
 
 def _buscar_candidatos(conn, tabela: str, coluna_vinculo: str, cliente: str, valor: float, mes, ano, excluir_id: Optional[str] = None):
     """Generaliza o match usado nas sugestões de vínculo (cliente substring nos dois
@@ -884,6 +1159,13 @@ def init_db():
         "cobranca_status": "TEXT DEFAULT ''",
         "cobranca_data": "TEXT DEFAULT ''",
         "cobranca_obs": "TEXT DEFAULT ''",
+        # ===== MIGRAÇÃO V16: padrão nacional (DANFSe v2.0). Só ADD COLUMN — notas antigas
+        # ficam com '' e são tratadas como padrão Prefeitura SP na leitura. =====
+        "padrao_nota": "TEXT DEFAULT ''",
+        "chave_acesso": "TEXT DEFAULT ''",
+        "codigo_tributacao": "TEXT DEFAULT ''",
+        "competencia": "TEXT DEFAULT ''",
+        "arquivo_sha256": "TEXT DEFAULT ''",
     }
     for nome_coluna, definicao in novas_colunas_notas.items():
         if nome_coluna not in colunas_notas:
@@ -1355,6 +1637,10 @@ def row_nota_fiscal(row):
         "cobrancaStatus": (row["cobranca_status"] if "cobranca_status" in chaves else "") or "",
         "cobrancaData": (row["cobranca_data"] if "cobranca_data" in chaves else "") or "",
         "cobrancaObs": (row["cobranca_obs"] if "cobranca_obs" in chaves else "") or "",
+        "padraoNota": ((row["padrao_nota"] if "padrao_nota" in chaves else "") or PADRAO_SP),
+        "chaveAcesso": (row["chave_acesso"] if "chave_acesso" in chaves else "") or "",
+        "codigoTributacao": (row["codigo_tributacao"] if "codigo_tributacao" in chaves else "") or "",
+        "competencia": (row["competencia"] if "competencia" in chaves else "") or "",
     }
 
 def row_vinculo(row):
@@ -1887,48 +2173,192 @@ def limpar_historico_pdfs(sessao: dict = Depends(exigir_admin)):
     conn.close()
     return {"status": "ok"}
 
+_NOME_PADRAO = {PADRAO_SP: "Prefeitura de São Paulo (padrão antigo)", PADRAO_NACIONAL: "Emissor Nacional — DANFSe v2.0"}
+
+def _numero_sem_zeros(numero) -> str:
+    return (str(numero or "").strip().lstrip("0")) or ""
+
+def _procurar_nota_duplicada(conn, dados: dict, sha256: str = ""):
+    """Como uma nota é identificada como única (V16): mesmo arquivo PDF, ou mesma chave de
+    acesso/identificador nacional, ou (mesmo número + mesmo PADRÃO + mesmo tomador). O
+    padrão entra na conta porque a numeração do Emissor Nacional recomeçou do 1 — a nota
+    nacional nº 1 NÃO é a mesma coisa que uma antiga nº 00000001 da Prefeitura."""
+    linhas = conn.execute("SELECT * FROM notas_fiscais").fetchall()
+    chave = (dados.get("chaveAcesso") or "").strip()
+    for r in linhas:
+        ks = r.keys()
+        if sha256 and "arquivo_sha256" in ks and r["arquivo_sha256"] == sha256:
+            return r, "é o mesmo arquivo PDF"
+        if chave and "chave_acesso" in ks and (r["chave_acesso"] or "") == chave:
+            return r, "tem a mesma chave de acesso"
+    numero = _numero_sem_zeros(dados.get("numeroNota"))
+    if not numero:
+        return None, ""
+    padrao = dados.get("padrao") or PADRAO_SP
+    for r in linhas:
+        r_padrao = (r["padrao_nota"] if "padrao_nota" in r.keys() else "") or PADRAO_SP
+        if r_padrao != padrao or _numero_sem_zeros(r["numero_nota"]) != numero:
+            continue
+        if _cliente_bate(dados.get("cliente"), r["cliente"], dados.get("cnpjTomador"), r["cnpj_tomador"]):
+            return r, "tem o mesmo número, padrão e cliente"
+    return None, ""
+
+def _msg_duplicada(r, motivo: str) -> str:
+    return (f"Esta nota já está cadastrada (nº {r['numero_nota'] or '-'} — {r['cliente'] or '-'}): {motivo}. "
+            "Nada foi gravado.")
+
+def _gravar_nota(conn, dados: dict, nome_fisico: str, nome_original: str, sha256: str) -> dict:
+    item_id = gerar_id()
+    cancelada = 1 if "CANCEL" in _sem_acento(dados.get("situacao") or "").upper() else 0
+    conn.execute(
+        """INSERT INTO notas_fiscais
+           (id, numero_nota, cliente, cnpj_tomador, mes_referencia, ano_referencia,
+            data_emissao, vencimento, valor, codigo_verificacao, arquivo_nome,
+            arquivo_nome_original, criado_em, financeiro_id, cancelada,
+            padrao_nota, chave_acesso, codigo_tributacao, competencia, arquivo_sha256)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (item_id, str(dados.get("numeroNota") or "").strip(), (dados.get("cliente") or "").strip(),
+         (dados.get("cnpjTomador") or "").strip(), dados.get("mesReferencia"), dados.get("anoReferencia"),
+         dados.get("dataEmissao") or "", dados.get("vencimento") or "", float(dados.get("valor") or 0),
+         dados.get("codigoVerificacao") or "", nome_fisico, nome_original, datetime.now().isoformat(), "",
+         cancelada, dados.get("padrao") or "", dados.get("chaveAcesso") or "",
+         dados.get("codigoTributacao") or "", dados.get("competencia") or "", sha256),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
+    item = row_nota_fiscal(row)
+    item["sugestaoFinanceiroId"] = sugerir_financeiro(
+        item["cliente"], item["valor"], item["mesReferencia"], item["anoReferencia"]
+    )
+    item["padraoDetectado"] = dados.get("padrao") or ""
+    item["padraoNome"] = _NOME_PADRAO.get(dados.get("padrao") or "", "Preenchida à mão (padrão não reconhecido)")
+    item["avisos"] = dados.get("avisos") or []
+    return item
+
 @app.post("/notas-fiscais/upload")
 async def upload_notas_fiscais(files: List[UploadFile] = File(...), sessao: dict = Depends(exigir_admin)):
-    criados = []
-    erros = []
+    """V16: detecta sozinho o padrão (Prefeitura SP antigo / DANFSe nacional), aplica o
+    extrator certo e SÓ grava quando os campos essenciais vieram. Se faltar algo, o PDF
+    fica aguardando em _pendentes e a tela pede preenchimento manual (lista 'manuais') —
+    nunca mais nasce registro vazio com cliente '-' e R$ 0,00."""
+    criados, erros, manuais = [], [], []
     conn = conectar_db()
     for arquivo in files:
+        nome_original = arquivo.filename or "nota.pdf"
         conteudo = await arquivo.read()
-        erro = _validar_pdf_upload(conteudo, arquivo.filename or "")
+        erro = _validar_pdf_upload(conteudo, nome_original)
         if erro:
-            erros.append({"arquivo": arquivo.filename, "erro": erro})
+            erros.append({"arquivo": nome_original, "erro": erro})
             continue
 
+        sha256 = hashlib.sha256(conteudo).hexdigest()
         nome_fisico = f"{uuid.uuid4()}.pdf"
-        caminho = UPLOAD_NOTAS_DIR / nome_fisico
-        caminho.write_bytes(conteudo)
+        caminho_pendente = UPLOAD_NOTAS_PENDENTES_DIR / nome_fisico
+        caminho_pendente.write_bytes(conteudo)
 
-        texto = extrair_texto_pdf(caminho)
-        extraido = parse_nfse_sp(texto)
+        dados = extrair_nfse(caminho_pendente)
 
-        item_id = gerar_id()
-        criado_em = datetime.now().isoformat()
+        duplicada, motivo = _procurar_nota_duplicada(conn, dados, sha256)
+        if duplicada:
+            caminho_pendente.unlink(missing_ok=True)
+            erros.append({"arquivo": nome_original, "erro": _msg_duplicada(duplicada, motivo), "duplicada": True})
+            continue
 
-        conn.execute(
-            """INSERT INTO notas_fiscais
-               (id, numero_nota, cliente, cnpj_tomador, mes_referencia, ano_referencia,
-                data_emissao, vencimento, valor, codigo_verificacao, arquivo_nome,
-                arquivo_nome_original, criado_em, financeiro_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (item_id, extraido["numeroNota"], extraido["cliente"], extraido["cnpjTomador"],
-             extraido["mesReferencia"], extraido["anoReferencia"], extraido["dataEmissao"],
-             extraido["vencimento"], extraido["valor"], extraido["codigoVerificacao"],
-             nome_fisico, arquivo.filename or nome_fisico, criado_em, ""),
-        )
-        conn.commit()
-        row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
-        item = row_nota_fiscal(row)
-        item["sugestaoFinanceiroId"] = sugerir_financeiro(
-            extraido["cliente"], extraido["valor"], extraido["mesReferencia"], extraido["anoReferencia"]
-        )
-        criados.append(item)
+        faltando = campos_essenciais_faltando(dados)
+        if faltando:
+            # guarda o que foi detectado no servidor (padrão, chave, hash) pra não depender do navegador
+            (UPLOAD_NOTAS_PENDENTES_DIR / f"{nome_fisico}.json").write_text(
+                json.dumps({"dados": dados, "sha256": sha256, "nomeOriginal": nome_original}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            if dados.get("padrao"):
+                mensagem = (f"Reconheci o padrão ({_NOME_PADRAO[dados['padrao']]}), mas não consegui ler: "
+                            f"{', '.join(faltando)}. Confira e preencha à mão — a nota só é gravada depois disso.")
+            else:
+                mensagem = ("Não reconheci o padrão desta nota (não parece NFS-e da Prefeitura de SP nem do "
+                            "Emissor Nacional). Preencha os dados à mão — a nota só é gravada depois disso.")
+            manuais.append({
+                "token": nome_fisico, "arquivoNomeOriginal": nome_original,
+                "padraoDetectado": dados.get("padrao") or "",
+                "padraoNome": _NOME_PADRAO.get(dados.get("padrao") or "", "Padrão não reconhecido"),
+                "faltando": faltando, "mensagem": mensagem, "avisos": dados.get("avisos") or [],
+                "dados": {k: dados.get(k) for k in (
+                    "numeroNota", "cliente", "cnpjTomador", "mesReferencia", "anoReferencia",
+                    "dataEmissao", "vencimento", "valor", "codigoVerificacao")},
+            })
+            continue
+
+        caminho_final = UPLOAD_NOTAS_DIR / nome_fisico
+        shutil.move(str(caminho_pendente), str(caminho_final))
+        criados.append(_gravar_nota(conn, dados, nome_fisico, nome_original, sha256))
     conn.close()
-    return {"status": "ok", "itens": criados, "erros": erros}
+    return {"status": "ok", "itens": criados, "erros": erros, "manuais": manuais}
+
+_TOKEN_PENDENTE_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$")
+
+class NotaManualPayload(BaseModel):
+    token: str
+    numeroNota: str = ""
+    cliente: str = ""
+    cnpjTomador: str = ""
+    mesReferencia: Optional[int] = None
+    anoReferencia: Optional[int] = None
+    dataEmissao: str = ""
+    vencimento: str = ""
+    valor: float = 0
+    codigoVerificacao: str = ""
+
+def _caminho_pendente(token: str) -> Path:
+    if not _TOKEN_PENDENTE_RE.match(token or ""):
+        raise HTTPException(status_code=400, detail="Identificador de arquivo inválido.")
+    caminho = UPLOAD_NOTAS_PENDENTES_DIR / token
+    if not caminho.exists():
+        raise HTTPException(status_code=404, detail="Esse PDF não está mais aguardando — envie a nota de novo.")
+    return caminho
+
+@app.post("/notas-fiscais/manual")
+def concluir_nota_manual(payload: NotaManualPayload, sessao: dict = Depends(exigir_admin)):
+    """Grava uma nota cujo PDF já subiu mas a extração ficou incompleta, com os dados
+    digitados pelo admin. Os mesmos campos essenciais são exigidos."""
+    caminho = _caminho_pendente(payload.token)
+    meta_path = UPLOAD_NOTAS_PENDENTES_DIR / f"{payload.token}.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        meta = {}
+    detectado = meta.get("dados") or {}
+    dados = {
+        **{k: detectado.get(k) for k in ("padrao", "chaveAcesso", "codigoTributacao", "competencia", "situacao")},
+        "numeroNota": payload.numeroNota.strip(), "cliente": payload.cliente.strip(),
+        "cnpjTomador": payload.cnpjTomador.strip(), "mesReferencia": payload.mesReferencia,
+        "anoReferencia": payload.anoReferencia, "dataEmissao": payload.dataEmissao,
+        "vencimento": payload.vencimento, "valor": payload.valor,
+        "codigoVerificacao": payload.codigoVerificacao.strip(),
+    }
+    # padrão não reconhecido + preenchida à mão fica marcada como 'manual' (não como SP)
+    dados["padrao"] = dados.get("padrao") or PADRAO_MANUAL
+    faltando = campos_essenciais_faltando(dados)
+    if faltando:
+        raise HTTPException(status_code=400, detail=f"Preencha antes de salvar: {', '.join(faltando)}.")
+    sha256 = meta.get("sha256") or hashlib.sha256(caminho.read_bytes()).hexdigest()
+    conn = conectar_db()
+    duplicada, motivo = _procurar_nota_duplicada(conn, dados, sha256)
+    if duplicada:
+        conn.close()
+        raise HTTPException(status_code=409, detail=_msg_duplicada(duplicada, motivo))
+    shutil.move(str(caminho), str(UPLOAD_NOTAS_DIR / payload.token))
+    meta_path.unlink(missing_ok=True)
+    item = _gravar_nota(conn, dados, payload.token, meta.get("nomeOriginal") or payload.token, sha256)
+    conn.close()
+    return {"status": "ok", "item": item}
+
+@app.delete("/notas-fiscais/manual/{token}")
+def descartar_nota_manual(token: str, sessao: dict = Depends(exigir_admin)):
+    """Descarta um PDF que estava aguardando preenchimento manual (nunca virou registro)."""
+    caminho = _caminho_pendente(token)
+    caminho.unlink(missing_ok=True)
+    (UPLOAD_NOTAS_PENDENTES_DIR / f"{token}.json").unlink(missing_ok=True)
+    return {"status": "ok"}
 
 @app.get("/notas-fiscais")
 def listar_notas_fiscais(mes: Optional[int] = None, ano: Optional[int] = None, cliente: Optional[str] = None, sessao: dict = Depends(obter_sessao)):

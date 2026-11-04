@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { clienteBate, chaveCliente } from "./shared/clientes";
 
 const API_BASE = "/api";
 const VERDE = "#00B050";
@@ -110,12 +111,8 @@ function curta(iso?: string) {
   return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
 }
 
-function clienteBate(a: string, b: string) {
-  const x = (a || "").trim().toLowerCase();
-  const y = (b || "").trim().toLowerCase();
-  if (!x || !y) return false;
-  return x.includes(y) || y.includes(x);
-}
+// V16: clienteBate/chaveCliente vêm de ./shared/clientes (CNPJ primeiro, depois nome
+// normalizado sem acento/pontuação/LTDA/S.A.).
 
 function soDigitos(s: string) {
   return (s || "").replace(/\D/g, "");
@@ -199,8 +196,10 @@ export default function Cobranca() {
     return vinculos.find((v) => v.notaId === notaId) || null;
   }
 
-  function telefoneDoCliente(nomeCliente: string): string {
-    const emp = empresas.find((e) => clienteBate(e.nome, nomeCliente));
+  function telefoneDoCliente(nomeCliente: string, cnpj = ""): string {
+    const emp =
+      (cnpj && empresas.find((e) => clienteBate(e.nome, nomeCliente, e.cnpj, cnpj))) ||
+      empresas.find((e) => clienteBate(e.nome, nomeCliente));
     return emp?.telefone || "";
   }
 
@@ -212,7 +211,7 @@ export default function Cobranca() {
     return cobraveis.filter((n) => (n.cliente || "").toLowerCase().includes(b));
   }, [cobraveis, busca]);
 
-  type Grupo = { cliente: string; notas: NotaFiscalItem[]; total: number; diasMaisUrgente: number };
+  type Grupo = { cliente: string; cnpj: string; notas: NotaFiscalItem[]; total: number; diasMaisUrgente: number };
 
   const grupos = useMemo(() => {
     const mapa = new Map<string, Grupo>();
@@ -221,8 +220,10 @@ export default function Cobranca() {
       const dias = n.vencimento ? diasEntreHojeE(n.vencimento) : null;
       const dentroJanela = st === "vencida" || dias === null || dias <= janela;
       if (!dentroJanela) continue;
-      const chave = (n.cliente || "Sem cliente").trim() || "Sem cliente";
-      if (!mapa.has(chave)) mapa.set(chave, { cliente: chave, notas: [], total: 0, diasMaisUrgente: 999999 });
+      // V16: mesmo cliente com grafias diferentes entre portais cai no mesmo grupo (CNPJ / nome normalizado)
+      const nomeExibido = (n.cliente || "Sem cliente").trim() || "Sem cliente";
+      const chave = chaveCliente(nomeExibido, n.cnpjTomador);
+      if (!mapa.has(chave)) mapa.set(chave, { cliente: nomeExibido, cnpj: n.cnpjTomador || "", notas: [], total: 0, diasMaisUrgente: 999999 });
       const g = mapa.get(chave)!;
       g.notas.push(n);
       g.total += n.valor || 0;
@@ -287,11 +288,11 @@ export default function Cobranca() {
   }
 
   function abrirWhatsappCliente(g: Grupo) {
-    abrirWhatsappTexto(g.cliente, montarTextoWhatsapp(g.cliente, g.notas), telefoneDoCliente(g.cliente));
+    abrirWhatsappTexto(g.cliente, montarTextoWhatsapp(g.cliente, g.notas), telefoneDoCliente(g.cliente, g.cnpj));
   }
 
   function abrirWhatsappNota(n: NotaFiscalItem) {
-    abrirWhatsappTexto(n.cliente, montarTextoWhatsapp(n.cliente, [n]), telefoneDoCliente(n.cliente));
+    abrirWhatsappTexto(n.cliente, montarTextoWhatsapp(n.cliente, [n]), telefoneDoCliente(n.cliente, n.cnpjTomador));
   }
 
   // V11: consolidado "Copiar tudo" da seção Cobrança - reaproveita a mesma janela/busca de `grupos`

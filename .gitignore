@@ -65,3 +65,6 @@ htmlcov/
 
 # graphify
 graphify-out/
+
+# Notas fiscais reais usadas como amostra de teste (V16) - nao versionar
+_amostras_nfse/

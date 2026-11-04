@@ -91,6 +91,9 @@ AGÊNCIA 8078
 CONTA CORRENTE 23126-6
 PIX: 18.315.702/0001-20`;
 
+const CODIGO_NBS = "1.1401.11.00";
+const URL_EMISSOR_NACIONAL = "https://www.nfse.gov.br/EmissorNacional";
+
 const vazio: NotaForm = {
   cliente: "",
   cnpj: "",
@@ -102,7 +105,8 @@ const vazio: NotaForm = {
   vencimento: "",
   valor: 0,
   pedidoCompra: "",
-  codigoServico: "03115 - Assessoria ou consultoria de qualquer natureza, não contida em outros itens desta lista.",
+  // V16: padrão do Emissor Nacional (desde nov/2026) - antes era "03115" da Prefeitura de SP
+  codigoServico: "17.01.01 / 001 - Assessoria ou consultoria de qualquer natureza, não contida em outros itens desta lista.",
   descricao: "",
   numeroNota: "",
   statusNota: "preparada",
@@ -248,9 +252,10 @@ Endereço: ${form.endereco}
 Município/UF: ${form.municipio} - ${form.uf}
 
 SERVIÇO:
-Código: ${form.codigoServico}
+Código de Tributação Nacional: ${form.codigoServico}
+Código NBS: ${CODIGO_NBS}
 Valor: ${brl(form.valor)}
-DISCRIMINAÇÃO:
+DESCRIÇÃO DO SERVIÇO:
 ${form.descricao}
 `.trim();
 
@@ -295,7 +300,7 @@ ${form.descricao}
   }
 
   function abrirPortal() {
-    window.open("https://nfe.prefeitura.sp.gov.br/", "_blank");
+    window.open(URL_EMISSOR_NACIONAL, "_blank");
   }
 
   async function abrirVincular(lancId: string, tipo: "nota" | "relatorio") {
@@ -410,10 +415,10 @@ ${form.descricao}
 
       <div className="head">
         <div>
-          <h1>Pré-Emissão NFS-e São Paulo</h1>
+          <h1>Pré-Emissão NFS-e — Emissor Nacional</h1>
           <p>Prepare dados da nota a partir do relatório aprovado e financeiro.</p>
         </div>
-        <button className="btn-primary" onClick={abrirPortal}>Abrir Nota do Milhão</button>
+        <button className="btn-primary" onClick={abrirPortal}>Abrir Emissor Nacional (nfse.gov.br)</button>
       </div>
 
       {erro && <div className="box" style={{color:"#b91c1c",fontWeight:900}}>{erro}</div>}
@@ -505,7 +510,7 @@ ${form.descricao}
           </div>
 
           <div className="field">
-            <label>Código do serviço</label>
+            <label>Código de tributação nacional (NBS {CODIGO_NBS})</label>
             <input value={form.codigoServico} onChange={(e) => atualizar("codigoServico", e.target.value)} />
           </div>
 
@@ -530,7 +535,7 @@ ${form.descricao}
 
           <div className="field" style={{marginTop:16}}>
             <label>Número da nota emitida</label>
-            <input value={form.numeroNota} onChange={(e) => atualizar("numeroNota", e.target.value)} placeholder="Ex: 00000824" />
+            <input value={form.numeroNota} onChange={(e) => atualizar("numeroNota", e.target.value)} placeholder="Ex: 1" />
           </div>
 
           <div className="actions">
@@ -652,9 +657,10 @@ Endereço: ${form.endereco || "-"}
 Município/UF: ${form.municipio || "-"} - ${form.uf || "-"}
 
 SERVIÇO:
-Código: ${form.codigoServico}
+Código de Tributação Nacional: ${form.codigoServico}
+Código NBS: ${CODIGO_NBS}
 Valor: ${brl(form.valor)}
-DISCRIMINAÇÃO:
+DESCRIÇÃO DO SERVIÇO:
 ${form.descricao || "-"}`}
         </div>
       </div>

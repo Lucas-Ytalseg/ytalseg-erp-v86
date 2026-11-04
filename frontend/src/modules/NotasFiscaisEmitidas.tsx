@@ -1,8 +1,37 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ConflitoVinculoDialog, { ConflitoInfo } from "./shared/ConflitoVinculoDialog";
 import { abrirArquivoAutenticado, baixarArquivoAutenticado } from "../services/auth";
+import { chaveCliente } from "./shared/clientes";
 
 const API_BASE = "/api";
+
+// V16: rótulo curto do padrão da nota (notas antigas sem padrão gravado = Prefeitura SP)
+const PADRAO_LABEL: Record<string, string> = {
+  sp_prefeitura: "Prefeitura SP",
+  nacional_danfse: "Nacional (DANFSe)",
+  manual: "Preenchida à mão",
+};
+
+// Nota cuja extração ficou incompleta: o PDF já está no servidor, mas nenhum registro
+// foi criado ainda - só é gravada depois que o admin completa os campos à mão.
+type NotaManualPendente = {
+  token: string;
+  arquivoNomeOriginal: string;
+  padraoDetectado: string;
+  padraoNome: string;
+  faltando: string[];
+  mensagem: string;
+  avisos: string[];
+  item: NotaFiscalItem;
+};
+
+async function mensagemDeErroHttp(res: Response, padrao: string): Promise<string> {
+  if (res.status === 401) return "Sua sessão expirou. Faça login novamente.";
+  if (res.status === 403) return "Seu perfil é só de visualização — apenas o admin pode subir ou alterar notas.";
+  const corpo = await res.json().catch(() => ({} as any));
+  if (typeof corpo?.detail === "string") return corpo.detail;
+  return corpo?.erro || padrao;
+}
 const TAMANHO_MAXIMO = 15 * 1024 * 1024;
 const NOMES_MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
@@ -24,6 +53,11 @@ type NotaFiscalItem = {
   sugestaoFinanceiroId?: string | null;
   cancelada: boolean;
   dataRecebimento: string;
+  padraoNota?: string;
+  chaveAcesso?: string;
+  codigoTributacao?: string;
+  padraoNome?: string;
+  avisos?: string[];
 };
 
 type StatusNota = "aberta" | "recebida" | "cancelada" | "vencida";
@@ -80,6 +114,10 @@ function CardNotaEdicao({
   sugestao,
   onAceitarSugestao,
   onIgnorarSugestao,
+  padraoNome,
+  avisoManual,
+  avisos,
+  textoSalvar = "Salvar",
 }: {
   item: NotaFiscalItem;
   onMudar: (campo: keyof NotaFiscalItem, valor: any) => void;
@@ -89,15 +127,26 @@ function CardNotaEdicao({
   sugestao?: FinanceiroResumo | null;
   onAceitarSugestao?: () => void;
   onIgnorarSugestao?: () => void;
+  padraoNome?: string;
+  avisoManual?: string;
+  avisos?: string[];
+  textoSalvar?: string;
 }) {
   return (
     <div className="nfe-confirm-card">
       <div className="nfe-confirm-title">
         {item.arquivoNomeOriginal || "PDF enviado"}
-        {!item.numeroNota && !item.cliente && (
+        {!avisoManual && !item.numeroNota && !item.cliente && (
           <span className="nfe-confirm-aviso"> — não consegui reconhecer os dados automaticamente. Preencha manualmente.</span>
         )}
       </div>
+      {padraoNome && (
+        <div className="nfe-padrao-detectado">Padrão detectado: <strong>{padraoNome}</strong></div>
+      )}
+      {avisoManual && <div className="nfe-msg">{avisoManual}</div>}
+      {(avisos || []).map((a) => (
+        <div key={a} className="nfe-msg">{a}</div>
+      ))}
       <div className="nfe-confirm-grid">
         <div className="nfe-confirm-field">
           <label>Nº da Nota</label>
@@ -161,7 +210,7 @@ function CardNotaEdicao({
       )}
 
       <div className="nfe-actions">
-        <button className="nfe-btn nfe-btn-green" onClick={onSalvar}>Salvar</button>
+        <button className="nfe-btn nfe-btn-green" onClick={onSalvar}>{textoSalvar}</button>
         <button className="nfe-btn" onClick={onFechar}>{textoFechar}</button>
       </div>
     </div>
@@ -187,6 +236,7 @@ export default function NotasFiscaisEmitidas({
   const [carregando, setCarregando] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [pendentes, setPendentes] = useState<NotaFiscalItem[]>([]);
+  const [manuais, setManuais] = useState<NotaManualPendente[]>([]);
   const [editando, setEditando] = useState<NotaFiscalItem | null>(null);
   const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
   const [dataLote, setDataLote] = useState(hojeISO());
@@ -236,12 +286,20 @@ export default function NotasFiscaisEmitidas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refrescarTick]);
 
+  // V16: o filtro agrupa o mesmo cliente escrito de jeitos diferentes (ex: "GEOAMBIENTE
+  // SOCIEDADE" e "GEOAMBIENTE SOCIEDADE ANONIMA") pelo CNPJ, ou pelo nome normalizado.
+  // O nome exibido é o da nota mais recente daquele cliente.
   const clientesDisponiveis = useMemo(() => {
-    const nomes = new Set<string>();
+    const porChave = new Map<string, { nome: string; criadoEm: string }>();
     lista.forEach((item) => {
-      if (item.cliente) nomes.add(item.cliente);
+      if (!item.cliente) return;
+      const chave = chaveCliente(item.cliente, item.cnpjTomador);
+      const atual = porChave.get(chave);
+      if (!atual || (item.criadoEm || "") > atual.criadoEm) porChave.set(chave, { nome: item.cliente, criadoEm: item.criadoEm || "" });
     });
-    return ["Todos", ...Array.from(nomes).sort((a, b) => a.localeCompare(b))];
+    const opcoes = Array.from(porChave.entries()).map(([chave, v]) => ({ chave, nome: v.nome }));
+    opcoes.sort((a, b) => a.nome.localeCompare(b.nome));
+    return [{ chave: "Todos", nome: "Todos" }, ...opcoes];
   }, [lista]);
 
   const anosDisponiveis = useMemo(() => {
@@ -255,7 +313,7 @@ export default function NotasFiscaisEmitidas({
   const filtrados = useMemo(() => {
     const buscaMin = busca.trim().toLowerCase();
     return lista.filter((item) => {
-      const okCliente = clienteFiltro === "Todos" || item.cliente === clienteFiltro;
+      const okCliente = clienteFiltro === "Todos" || chaveCliente(item.cliente, item.cnpjTomador) === clienteFiltro;
       const okMes = mesFiltro === "Todos" || NOMES_MESES[item.mesReferencia || 0] === mesFiltro;
       const okAno = anoFiltro === "Todos" || String(item.anoReferencia || "") === anoFiltro;
       const okStatus = statusFiltro === "Todos" || STATUS_LABEL[statusNota(item)] === statusFiltro;
@@ -326,9 +384,35 @@ export default function NotasFiscaisEmitidas({
       const form = new FormData();
       validos.forEach((arq) => form.append("files", arq));
       const res = await fetch(`${API_BASE}/notas-fiscais/upload`, { method: "POST", body: form });
+      if (!res.ok) {
+        setMsg(await mensagemDeErroHttp(res, "Erro ao enviar notas fiscais."));
+        return;
+      }
       const data = await res.json();
       if (data.status === "ok") {
         setPendentes((prev) => [...(data.itens || []), ...prev]);
+        const novosManuais: NotaManualPendente[] = (data.manuais || []).map((m: any) => ({
+          ...m,
+          item: {
+            id: m.token,
+            numeroNota: m.dados?.numeroNota || "",
+            cliente: m.dados?.cliente || "",
+            cnpjTomador: m.dados?.cnpjTomador || "",
+            mesReferencia: m.dados?.mesReferencia || null,
+            anoReferencia: m.dados?.anoReferencia || null,
+            dataEmissao: m.dados?.dataEmissao || "",
+            vencimento: m.dados?.vencimento || "",
+            valor: Number(m.dados?.valor || 0),
+            codigoVerificacao: m.dados?.codigoVerificacao || "",
+            arquivoNomeOriginal: m.arquivoNomeOriginal,
+            temArquivo: true,
+            criadoEm: "",
+            financeiroId: "",
+            cancelada: false,
+            dataRecebimento: "",
+          },
+        }));
+        setManuais((prev) => [...novosManuais, ...prev]);
         const errosServidor = (data.erros || []).map((er: any) => `${er.arquivo}: ${er.erro}`);
         setMsg([...avisos, ...errosServidor].filter(Boolean).join(" "));
         await carregar();
@@ -340,6 +424,67 @@ export default function NotasFiscaisEmitidas({
       setMsg(`Erro ao enviar notas fiscais: ${err}`);
     } finally {
       setEnviando(false);
+    }
+  }
+
+  function mudarManual(token: string, campo: keyof NotaFiscalItem, valor: any) {
+    setManuais((prev) => prev.map((m) => (m.token === token ? { ...m, item: { ...m.item, [campo]: valor } } : m)));
+  }
+
+  async function salvarManual(m: NotaManualPendente) {
+    const it = m.item;
+    const faltando: string[] = [];
+    if (!it.numeroNota.trim()) faltando.push("número da nota");
+    if (!it.cliente.trim()) faltando.push("cliente");
+    if (!(Number(it.valor) > 0)) faltando.push("valor");
+    if (!it.mesReferencia || !it.anoReferencia) faltando.push("mês/ano de referência");
+    if (faltando.length) {
+      setMsg(`${m.arquivoNomeOriginal}: preencha antes de salvar — ${faltando.join(", ")}.`);
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/notas-fiscais/manual`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: m.token,
+          numeroNota: it.numeroNota,
+          cliente: it.cliente,
+          cnpjTomador: it.cnpjTomador,
+          mesReferencia: it.mesReferencia,
+          anoReferencia: it.anoReferencia,
+          dataEmissao: it.dataEmissao,
+          vencimento: it.vencimento,
+          valor: Number(it.valor),
+          codigoVerificacao: it.codigoVerificacao,
+        }),
+      });
+      if (!res.ok) {
+        setMsg(`${m.arquivoNomeOriginal}: ${await mensagemDeErroHttp(res, "Erro ao salvar a nota.")}`);
+        return;
+      }
+      const data = await res.json();
+      setManuais((prev) => prev.filter((x) => x.token !== m.token));
+      // segue o fluxo normal: cartão de conferência com sugestão de vínculo
+      if (data.item) setPendentes((prev) => [data.item, ...prev]);
+      setMsg("");
+      await carregar();
+      onMudou?.();
+    } catch (err) {
+      setMsg(`Erro ao salvar: ${err}`);
+    }
+  }
+
+  async function descartarManual(m: NotaManualPendente) {
+    try {
+      const res = await fetch(`${API_BASE}/notas-fiscais/manual/${m.token}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 404) {
+        setMsg(await mensagemDeErroHttp(res, "Erro ao descartar o PDF."));
+        return;
+      }
+      setManuais((prev) => prev.filter((x) => x.token !== m.token));
+    } catch (err) {
+      setMsg(`Erro ao descartar: ${err}`);
     }
   }
 
@@ -364,6 +509,10 @@ export default function NotasFiscaisEmitidas({
           codigoVerificacao: item.codigoVerificacao,
         }),
       });
+      if (!res.ok) {
+        setMsg(await mensagemDeErroHttp(res, "Erro ao salvar os dados da nota."));
+        return;
+      }
       const data = await res.json();
       if (data.status !== "ok") {
         setMsg("Erro ao salvar os dados da nota.");
@@ -635,6 +784,9 @@ export default function NotasFiscaisEmitidas({
         .nfe-confirm-card { background: #f8fafc; border: 1px dashed #94a3b8; border-radius: 18px; padding: 16px; display: grid; gap: 12px; }
         .nfe-confirm-title { font-weight: 1000; color: #111827; }
         .nfe-confirm-aviso { font-weight: 700; color: #b45309; }
+        .nfe-padrao-detectado { margin: 6px 0 10px; font-size: 13px; color: #1e3a8a; background: #eff6ff; border: 1px solid #bfdbfe; padding: 6px 10px; border-radius: 10px; display: inline-block; }
+        .nfe-confirm-card .nfe-msg { margin-bottom: 10px; }
+        .nfe-badge-padrao { font-size: 10px; font-weight: 800; color: #6b7280; margin-top: 2px; white-space: nowrap; }
         .nfe-confirm-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
         .nfe-confirm-field label { display: block; font-size: 11px; font-weight: 1000; color: #6b7280; margin-bottom: 4px; }
         .nfe-confirm-field input, .nfe-confirm-field select { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px; font-size: 13px; box-sizing: border-box; }
@@ -669,7 +821,7 @@ export default function NotasFiscaisEmitidas({
       <div className="nfe-head">
         <div className="nfe-title">
           <h2>Notas Fiscais Emitidas</h2>
-          <p>Guarde aqui as notas fiscais (NFS-e) emitidas manualmente no portal da Prefeitura de SP.</p>
+          <p>Guarde aqui as notas fiscais (NFS-e) emitidas. O sistema reconhece sozinho os dois padrões: Emissor Nacional (DANFSe, desde nov/2026) e o antigo da Prefeitura de SP.</p>
         </div>
         <div className="nfe-actions">
           <input
@@ -695,9 +847,26 @@ export default function NotasFiscaisEmitidas({
         <ConflitoVinculoDialog conflito={conflito} onResolver={resolverConflito} onFechar={() => setConflito(null)} />
       )}
 
+      {manuais.map((m) => (
+        <CardNotaEdicao
+          key={m.token}
+          item={m.item}
+          onMudar={(campo, valor) => mudarManual(m.token, campo, valor)}
+          onSalvar={() => salvarManual(m)}
+          onFechar={() => descartarManual(m)}
+          textoFechar="Descartar este PDF"
+          textoSalvar="Salvar nota"
+          padraoNome={m.padraoNome}
+          avisoManual={m.mensagem}
+          avisos={m.avisos}
+        />
+      ))}
+
       {pendentes.map((item) => (
         <CardNotaEdicao
           key={item.id}
+          padraoNome={item.padraoNome}
+          avisos={item.avisos}
           item={item}
           onMudar={(campo, valor) => mudarPendente(item.id, campo, valor)}
           onSalvar={() => salvarItem(item, true)}
@@ -727,7 +896,7 @@ export default function NotasFiscaisEmitidas({
           onChange={(e) => setBusca(e.target.value)}
         />
         <select className="nfe-select" value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)}>
-          {clientesDisponiveis.map((c) => <option key={c}>{c}</option>)}
+          {clientesDisponiveis.map((c) => <option key={c.chave} value={c.chave}>{c.nome}</option>)}
         </select>
         <select className="nfe-select" value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)}>
           <option>Todos</option>
@@ -823,10 +992,13 @@ export default function NotasFiscaisEmitidas({
             />
           )}
         </td>
-        <td data-label="Nº Nota">{item.numeroNota || "-"}</td>
+        <td data-label="Nº Nota">
+          {item.numeroNota || "-"}
+          <div className="nfe-badge-padrao">{PADRAO_LABEL[item.padraoNota || "sp_prefeitura"] || item.padraoNota}</div>
+        </td>
         <td data-label="Cliente">
           {item.cliente || "-"}
-          {item.cancelada && <span className="nfe-badge-cancelada">CANCELADA</span>}
+          {item.cancelada && <> <span className="nfe-badge-cancelada">CANCELADA</span></>}
         </td>
         <td data-label="Mês Referência">{referenciaLabel(item)}</td>
         <td data-label="Status">
