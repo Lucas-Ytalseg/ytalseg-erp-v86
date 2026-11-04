@@ -22,6 +22,12 @@ def client(tmp_path, monkeypatch):
     main = importlib.import_module("app.backend.app.main")
     from fastapi.testclient import TestClient
 
+    # Desde o login seguro as rotas exigem sessão; nos testes de regra de negócio
+    # entra uma sessão de admin falsa (o login em si não é o que se testa aqui).
+    sessao_teste = {"user": "teste", "perfil": "admin"}
+    main.app.dependency_overrides[main.exigir_admin] = lambda: sessao_teste
+    main.app.dependency_overrides[main.obter_sessao] = lambda: sessao_teste
+
     with TestClient(main.app) as test_client:
         test_client.main = main  # dá acesso direto ao módulo (conectar_db etc.) nos testes
         yield test_client

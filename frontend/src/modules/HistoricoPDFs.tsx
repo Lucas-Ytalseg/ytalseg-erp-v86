@@ -371,7 +371,8 @@ export default function HistoricoPDFs({ onAbrirRelatorio }: { onAbrirRelatorio?:
         .hist-btn-green { background: #00B050; color: white; }
         .hist-btn-red { background: #fee2e2; color: #991b1b; }
         .hist-btn[disabled] { opacity: .6; cursor: default; }
-        .hist-card { background: white; border: 1px solid #e5e7eb; border-radius: 22px; box-shadow: 0 10px 24px rgba(0,0,0,.06); overflow: hidden; overflow-x: auto; }
+        .hist-card { background: white; border: 1px solid #e5e7eb; border-radius: 22px; box-shadow: 0 10px 24px rgba(0,0,0,.06); overflow: auto; max-height: calc(100vh - 200px); min-height: 320px; }
+        .hist-card .hist-table th { position: sticky; top: 0; z-index: 1; }
         .hist-table { width: 100%; border-collapse: collapse; font-size: 13px; }
         .hist-table th { text-align: left; background: #f9fafb; padding: 12px; border-bottom: 1px solid #e5e7eb; font-weight: 1000; color: #374151; white-space: nowrap; }
         .hist-table td { padding: 12px; border-bottom: 1px solid #eef0f2; font-weight: 750; vertical-align: middle; }

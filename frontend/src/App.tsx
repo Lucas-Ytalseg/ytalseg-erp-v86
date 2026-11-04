@@ -85,6 +85,23 @@ export default function App() {
   const [grupoAbertoV52, setGrupoAbertoV52] = React.useState<string>("Principal");
 
   const [verificandoSessao, setVerificandoSessao] = React.useState(true);
+  // Menu lateral escondido/visível: lembra a escolha neste navegador. Sem escolha
+  // salva, janela estreita (meia tela no Windows) já abre com o menu escondido.
+  const [menuOculto, setMenuOculto] = React.useState<boolean>(() => {
+    try {
+      const salvo = localStorage.getItem("ytalseg_menu_oculto");
+      if (salvo === "1" || salvo === "0") return salvo === "1";
+    } catch {}
+    return typeof window !== "undefined" && window.innerWidth < 1000 && window.matchMedia("(hover: hover)").matches;
+  });
+
+  function alternarMenu() {
+    setMenuOculto((atual) => {
+      const novo = !atual;
+      try { localStorage.setItem("ytalseg_menu_oculto", novo ? "1" : "0"); } catch {}
+      return novo;
+    });
+  }
 
   React.useEffect(() => {
     obterSessaoAtual()
@@ -198,7 +215,7 @@ export default function App() {
   }
 
   return (
-    <div className="erp-root">
+    <div className={menuOculto ? "erp-root menu-oculto" : "erp-root"}>
       <style>{`
         * { box-sizing: border-box; }
 
@@ -209,10 +226,41 @@ export default function App() {
           color: #111;
         }
 
+        /* A página inteira tem a altura da janela e quem rola é só a área da direita
+           (.main). Assim a barra de rolagem pro lado fica sempre no pé da janela, mesmo
+           com o navegador em meia tela - antes ela ficava lá no fim da página. */
         .erp-root {
-          min-height: 100vh;
+          height: 100vh;
           display: flex;
+          overflow: hidden;
           background: #eef1f3;
+        }
+
+        .erp-root.menu-oculto .sidebar {
+          display: none;
+        }
+
+        .topbar-titulo {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          min-width: 0;
+        }
+
+        .menu-toggle {
+          border: 1px solid #dfe3e8;
+          background: #fff;
+          border-radius: 10px;
+          padding: 8px 12px;
+          font-size: 14px;
+          font-weight: 900;
+          cursor: pointer;
+          white-space: nowrap;
+          color: #111827;
+        }
+
+        .menu-toggle:hover {
+          background: #f3f4f6;
         }
 
         .sidebar {
@@ -356,6 +404,8 @@ export default function App() {
         .main {
           flex: 1;
           min-width: 0;
+          height: 100vh;
+          overflow: auto;
         }
 
         .topbar {
@@ -530,8 +580,24 @@ export default function App() {
         }
 
         @media (max-width: 820px) {
+          .cards,
+          .dash-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+
+        /* Celular (tela de toque estreita): menu em cima e a página rola normal, como
+           sempre foi. Janela estreita no computador NÃO entra aqui - lá vale o botão Menu. */
+        @media (max-width: 820px) and (hover: none) {
           .erp-root {
             display: block;
+            height: auto;
+            overflow: visible;
+          }
+
+          .main {
+            height: auto;
+            overflow: visible;
           }
 
           .sidebar {
@@ -539,11 +605,6 @@ export default function App() {
             min-width: 0;
             height: auto;
             position: relative;
-          }
-
-          .cards,
-          .dash-grid {
-            grid-template-columns: 1fr;
           }
         }
 
@@ -561,6 +622,12 @@ export default function App() {
             margin: 0 !important;
             padding: 0 !important;
             background: white !important;
+          }
+
+          .erp-root,
+          .main {
+            height: auto !important;
+            overflow: visible !important;
           }
         }
       `}</style>
@@ -615,6 +682,15 @@ export default function App() {
 
       <main className="main">
         <header className="topbar">
+          <div className="topbar-titulo">
+          <button
+            type="button"
+            className="menu-toggle"
+            onClick={alternarMenu}
+            title={menuOculto ? "Mostrar o menu lateral" : "Esconder o menu lateral pra sobrar mais espaço"}
+          >
+            ☰ {menuOculto ? "Mostrar menu" : "Esconder menu"}
+          </button>
           <h2>
             {menu === "dashboard" && "Dashboard Geral"}
             {menu === "banco-local" && "Banco Local"}
@@ -631,6 +707,7 @@ export default function App() {
             {menu === "configuracoes" && "Configurações"}
             {menu === "historico-pdfs" && "Histórico de PDFs"}
           </h2>
+          </div>
           <div className="pill">Sistema Interno YTALSEG</div>
           <div className="topbar-user">
             <strong>Usuário: {user} • Perfil: {perfil}</strong>

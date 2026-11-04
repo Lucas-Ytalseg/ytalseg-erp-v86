@@ -1,0 +1,1217 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import ConflitoVinculoDialog, { ConflitoInfo } from "./shared/ConflitoVinculoDialog";
+import { abrirArquivoAutenticado, baixarArquivoAutenticado } from "../services/auth";
+import { chaveCliente } from "./shared/clientes";
+
+const API_BASE = "/api";
+
+// V16: rótulo curto do padrão da nota (notas antigas sem padrão gravado = Prefeitura SP)
+const PADRAO_LABEL: Record<string, string> = {
+  sp_prefeitura: "Prefeitura SP",
+  nacional_danfse: "Nacional (DANFSe)",
+  manual: "Preenchida à mão",
+};
+
+// Nota cuja extração ficou incompleta: o PDF já está no servidor, mas nenhum registro
+// foi criado ainda - só é gravada depois que o admin completa os campos à mão.
+type NotaManualPendente = {
+  token: string;
+  arquivoNomeOriginal: string;
+  padraoDetectado: string;
+  padraoNome: string;
+  faltando: string[];
+  mensagem: string;
+  avisos: string[];
+  item: NotaFiscalItem;
+};
+
+async function mensagemDeErroHttp(res: Response, padrao: string): Promise<string> {
+  if (res.status === 401) return "Sua sessão expirou. Faça login novamente.";
+  if (res.status === 403) return "Seu perfil é só de visualização — apenas o admin pode subir ou alterar notas.";
+  const corpo = await res.json().catch(() => ({} as any));
+  if (typeof corpo?.detail === "string") return corpo.detail;
+  return corpo?.erro || padrao;
+}
+const TAMANHO_MAXIMO = 15 * 1024 * 1024;
+const NOMES_MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+
+type NotaFiscalItem = {
+  id: string;
+  numeroNota: string;
+  cliente: string;
+  cnpjTomador: string;
+  mesReferencia: number | null;
+  anoReferencia: number | null;
+  dataEmissao: string;
+  vencimento: string;
+  valor: number;
+  codigoVerificacao: string;
+  arquivoNomeOriginal: string;
+  temArquivo: boolean;
+  criadoEm: string;
+  financeiroId: string;
+  sugestaoFinanceiroId?: string | null;
+  cancelada: boolean;
+  dataRecebimento: string;
+  padraoNota?: string;
+  chaveAcesso?: string;
+  codigoTributacao?: string;
+  padraoNome?: string;
+  avisos?: string[];
+  qtdLancamentos?: number;
+  somaLancamentos?: number;
+};
+
+// V17: nota composta (vários lançamentos/relatórios numa nota só)
+type LancamentoComp = { id: string; cliente: string; referencia: string; valor: number };
+type ComposicaoNota = {
+  valorNota: number;
+  soma: number;
+  falta: number;
+  itens: LancamentoComp[];
+  candidatos: LancamentoComp[];
+  combinacaoSugerida: string[];
+};
+
+type StatusNota = "aberta" | "recebida" | "cancelada" | "vencida";
+
+const STATUS_LABEL: Record<StatusNota, string> = {
+  aberta: "Em aberto",
+  recebida: "Recebida",
+  cancelada: "Cancelada",
+  vencida: "Em atraso",
+};
+
+function hojeISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// "Em atraso" não é um status gravado - é sempre calculado (vencimento passou e a
+// nota não está recebida nem cancelada), então nunca fica desatualizado.
+function statusNota(item: NotaFiscalItem): StatusNota {
+  if (item.cancelada) return "cancelada";
+  if (item.dataRecebimento) return "recebida";
+  if (item.vencimento && item.vencimento < hojeISO()) return "vencida";
+  return "aberta";
+}
+
+type FinanceiroResumo = {
+  id: string;
+  cliente: string;
+  valor: number;
+  referencia: string;
+};
+
+function brl(v: number) {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(v || 0));
+}
+
+function dataCurtaBR(iso?: string) {
+  if (!iso) return "-";
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("pt-BR");
+}
+
+function referenciaLabel(item: NotaFiscalItem) {
+  if (!item.mesReferencia || !item.anoReferencia) return "-";
+  return `${NOMES_MESES[item.mesReferencia]} / ${item.anoReferencia}`;
+}
+
+function CardNotaEdicao({
+  item,
+  onMudar,
+  onSalvar,
+  onFechar,
+  textoFechar,
+  sugestao,
+  onAceitarSugestao,
+  onIgnorarSugestao,
+  padraoNome,
+  avisoManual,
+  avisos,
+  textoSalvar = "Salvar",
+}: {
+  item: NotaFiscalItem;
+  onMudar: (campo: keyof NotaFiscalItem, valor: any) => void;
+  onSalvar: () => void;
+  onFechar: () => void;
+  textoFechar: string;
+  sugestao?: FinanceiroResumo | null;
+  onAceitarSugestao?: () => void;
+  onIgnorarSugestao?: () => void;
+  padraoNome?: string;
+  avisoManual?: string;
+  avisos?: string[];
+  textoSalvar?: string;
+}) {
+  return (
+    <div className="nfe-confirm-card">
+      <div className="nfe-confirm-title">
+        {item.arquivoNomeOriginal || "PDF enviado"}
+        {!avisoManual && !item.numeroNota && !item.cliente && (
+          <span className="nfe-confirm-aviso"> — não consegui reconhecer os dados automaticamente. Preencha manualmente.</span>
+        )}
+      </div>
+      {padraoNome && (
+        <div className="nfe-padrao-detectado">Padrão detectado: <strong>{padraoNome}</strong></div>
+      )}
+      {avisoManual && <div className="nfe-msg">{avisoManual}</div>}
+      {(avisos || []).map((a) => (
+        <div key={a} className="nfe-msg">{a}</div>
+      ))}
+      <div className="nfe-confirm-grid">
+        <div className="nfe-confirm-field">
+          <label>Nº da Nota</label>
+          <input value={item.numeroNota} onChange={(e) => onMudar("numeroNota", e.target.value)} />
+        </div>
+        <div className="nfe-confirm-field">
+          <label>Cliente</label>
+          <input value={item.cliente} onChange={(e) => onMudar("cliente", e.target.value)} />
+        </div>
+        <div className="nfe-confirm-field">
+          <label>CNPJ</label>
+          <input value={item.cnpjTomador} onChange={(e) => onMudar("cnpjTomador", e.target.value)} />
+        </div>
+        <div className="nfe-confirm-field">
+          <label>Mês referência</label>
+          <select
+            value={item.mesReferencia || ""}
+            onChange={(e) => onMudar("mesReferencia", e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">-</option>
+            {NOMES_MESES.slice(1).map((nome, i) => (
+              <option key={nome} value={i + 1}>{nome}</option>
+            ))}
+          </select>
+        </div>
+        <div className="nfe-confirm-field">
+          <label>Ano referência</label>
+          <input
+            type="number"
+            value={item.anoReferencia || ""}
+            onChange={(e) => onMudar("anoReferencia", e.target.value ? Number(e.target.value) : null)}
+          />
+        </div>
+        <div className="nfe-confirm-field">
+          <label>Emissão</label>
+          <input type="date" value={item.dataEmissao} onChange={(e) => onMudar("dataEmissao", e.target.value)} />
+        </div>
+        <div className="nfe-confirm-field">
+          <label>Vencimento</label>
+          <input type="date" value={item.vencimento} onChange={(e) => onMudar("vencimento", e.target.value)} />
+        </div>
+        <div className="nfe-confirm-field">
+          <label>Valor</label>
+          <input type="number" value={item.valor} onChange={(e) => onMudar("valor", Number(e.target.value || 0))} />
+        </div>
+        <div className="nfe-confirm-field">
+          <label>Código de verificação</label>
+          <input value={item.codigoVerificacao} onChange={(e) => onMudar("codigoVerificacao", e.target.value)} />
+        </div>
+      </div>
+
+      {sugestao && (
+        <div className="nfe-sugestao">
+          Encontrei um lançamento parecido no Financeiro: <strong>{sugestao.cliente} — {brl(sugestao.valor)} — {sugestao.referencia || "-"}</strong>.
+          Vincular e marcar como nota enviada?
+          <div className="nfe-actions" style={{ marginTop: 8 }}>
+            <button className="nfe-btn nfe-btn-green" onClick={onAceitarSugestao}>Vincular</button>
+            <button className="nfe-btn" onClick={onIgnorarSugestao}>Ignorar</button>
+          </div>
+        </div>
+      )}
+
+      <div className="nfe-actions">
+        <button className="nfe-btn nfe-btn-green" onClick={onSalvar}>{textoSalvar}</button>
+        <button className="nfe-btn" onClick={onFechar}>{textoFechar}</button>
+      </div>
+    </div>
+  );
+}
+
+export default function NotasFiscaisEmitidas({
+  refrescarTick,
+  onMudou,
+}: {
+  refrescarTick?: number;
+  onMudou?: () => void;
+} = {}) {
+  const [lista, setLista] = useState<NotaFiscalItem[]>([]);
+  const [financeiro, setFinanceiro] = useState<FinanceiroResumo[]>([]);
+  const [busca, setBusca] = useState("");
+  const [mesFiltro, setMesFiltro] = useState("Todos");
+  const [anoFiltro, setAnoFiltro] = useState("Todos");
+  const [clienteFiltro, setClienteFiltro] = useState("Todos");
+  const [statusFiltro, setStatusFiltro] = useState("Todos");
+  const [ordemAscendente, setOrdemAscendente] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [carregando, setCarregando] = useState(false);
+  const [enviando, setEnviando] = useState(false);
+  const [pendentes, setPendentes] = useState<NotaFiscalItem[]>([]);
+  const [manuais, setManuais] = useState<NotaManualPendente[]>([]);
+  const [editando, setEditando] = useState<NotaFiscalItem | null>(null);
+  const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
+  const [dataLote, setDataLote] = useState(hojeISO());
+  const [marcandoLote, setMarcandoLote] = useState(false);
+  const [conflito, setConflito] = useState<(ConflitoInfo & { _origem: { item: NotaFiscalItem; financeiroId: string; isPendente: boolean } }) | null>(null);
+  const [vinculandoId, setVinculandoId] = useState<string | null>(null);
+  const [compondoId, setCompondoId] = useState<string | null>(null);
+  const [composicao, setComposicao] = useState<ComposicaoNota | null>(null);
+  const [compSelecionados, setCompSelecionados] = useState<Set<string>>(new Set());
+  const [salvandoComp, setSalvandoComp] = useState(false);
+  const [carregandoArquivo, setCarregandoArquivo] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  async function carregar() {
+    setCarregando(true);
+    setMsg("");
+    try {
+      const [resNotas, resFin] = await Promise.all([
+        fetch(`${API_BASE}/notas-fiscais`),
+        fetch(`${API_BASE}/financeiro`).catch(() => null),
+      ]);
+      const dataNotas = await resNotas.json();
+      if (dataNotas.status === "ok") {
+        setLista(dataNotas.notas || []);
+      } else {
+        setMsg("Erro ao carregar notas fiscais.");
+      }
+      if (resFin) {
+        const dataFin = await resFin.json();
+        if (dataFin.status === "ok") {
+          setFinanceiro(dataFin.lancamentos || []);
+        }
+      }
+    } catch (err) {
+      setMsg(`Erro ao carregar notas fiscais: ${err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  useEffect(() => {
+    carregar();
+  }, []);
+
+  // NotaFiscal.tsx renderiza este componente junto com sua própria lista de
+  // financeiro/vínculos, cada um buscando os dados de forma independente. Isso
+  // reflete aqui qualquer mudança feita do lado de fora (ex: vincular pela tela do
+  // Financeiro) sem precisar clicar em "Atualizar" manualmente.
+  useEffect(() => {
+    if (refrescarTick) carregar();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refrescarTick]);
+
+  // V16: o filtro agrupa o mesmo cliente escrito de jeitos diferentes (ex: "GEOAMBIENTE
+  // SOCIEDADE" e "GEOAMBIENTE SOCIEDADE ANONIMA") pelo CNPJ, ou pelo nome normalizado.
+  // O nome exibido é o da nota mais recente daquele cliente.
+  const clientesDisponiveis = useMemo(() => {
+    const porChave = new Map<string, { nome: string; criadoEm: string }>();
+    lista.forEach((item) => {
+      if (!item.cliente) return;
+      const chave = chaveCliente(item.cliente, item.cnpjTomador);
+      const atual = porChave.get(chave);
+      if (!atual || (item.criadoEm || "") > atual.criadoEm) porChave.set(chave, { nome: item.cliente, criadoEm: item.criadoEm || "" });
+    });
+    const opcoes = Array.from(porChave.entries()).map(([chave, v]) => ({ chave, nome: v.nome }));
+    opcoes.sort((a, b) => a.nome.localeCompare(b.nome));
+    return [{ chave: "Todos", nome: "Todos" }, ...opcoes];
+  }, [lista]);
+
+  const anosDisponiveis = useMemo(() => {
+    const anos = new Set<string>();
+    lista.forEach((item) => {
+      if (item.anoReferencia) anos.add(String(item.anoReferencia));
+    });
+    return ["Todos", ...Array.from(anos).sort((a, b) => Number(b) - Number(a))];
+  }, [lista]);
+
+  const filtrados = useMemo(() => {
+    const buscaMin = busca.trim().toLowerCase();
+    return lista.filter((item) => {
+      const okCliente = clienteFiltro === "Todos" || chaveCliente(item.cliente, item.cnpjTomador) === clienteFiltro;
+      const okMes = mesFiltro === "Todos" || NOMES_MESES[item.mesReferencia || 0] === mesFiltro;
+      const okAno = anoFiltro === "Todos" || String(item.anoReferencia || "") === anoFiltro;
+      const okStatus = statusFiltro === "Todos" || STATUS_LABEL[statusNota(item)] === statusFiltro;
+      const okBusca = !buscaMin || `${item.cliente} ${item.numeroNota}`.toLowerCase().includes(buscaMin);
+      return okCliente && okMes && okAno && okStatus && okBusca;
+    });
+  }, [lista, busca, mesFiltro, anoFiltro, clienteFiltro, statusFiltro]);
+
+  // V16.5: ordem pelo NÚMERO DA NOTA, separado por padrão. A numeração recomeçou do 1
+  // no Emissor Nacional, então as notas novas ficam num bloco (5, 4, 3, 2, 1) e as
+  // antigas da Prefeitura em outro (868, 867, 866...). "Mais recentes primeiro" mostra
+  // o bloco novo em cima; "Mais antigas primeiro" inverte tudo. Notas sem mês/ano de
+  // referência continuam numa seção separada no final, com a mesma ordem.
+  const gruposOrdenados = useMemo(() => {
+    const comReferencia = filtrados.filter((i) => i.mesReferencia && i.anoReferencia);
+    const semReferencia = filtrados.filter((i) => !i.mesReferencia || !i.anoReferencia);
+    const dir = ordemAscendente ? 1 : -1;
+    const numero = (i: NotaFiscalItem) => Number(String(i.numeroNota || "").replace(/\D/g, "")) || 0;
+    // bloco mais novo = número maior: nacional (2) > Prefeitura SP antiga (1) > preenchida à mão (0)
+    const bloco = (i: NotaFiscalItem) =>
+      i.padraoNota === "nacional_danfse" ? 2 : i.padraoNota === "manual" ? 0 : 1;
+
+    const porEmissao = (a: NotaFiscalItem, b: NotaFiscalItem) => {
+      const ba = bloco(a);
+      const bb = bloco(b);
+      if (ba !== bb) return dir * (ba - bb);
+      const na = numero(a);
+      const nb = numero(b);
+      if (na !== nb) return dir * (na - nb);
+      return a.cliente.localeCompare(b.cliente, "pt-BR");
+    };
+
+    comReferencia.sort(porEmissao);
+    semReferencia.sort(porEmissao);
+
+    return { comReferencia, semReferencia };
+  }, [filtrados, ordemAscendente]);
+
+  const totalFiltrado = useMemo(
+    () => filtrados.filter((item) => !item.cancelada).reduce((soma, item) => soma + Number(item.valor || 0), 0),
+    [filtrados]
+  );
+
+  function abrirSeletor() {
+    inputRef.current?.click();
+  }
+
+  async function onArquivosSelecionados(e: React.ChangeEvent<HTMLInputElement>) {
+    const arquivos = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (arquivos.length === 0) return;
+
+    const validos: File[] = [];
+    const avisos: string[] = [];
+    for (const arq of arquivos) {
+      if (!arq.name.toLowerCase().endsWith(".pdf")) {
+        avisos.push(`${arq.name}: envie apenas arquivos PDF.`);
+        continue;
+      }
+      if (arq.size > TAMANHO_MAXIMO) {
+        avisos.push(`${arq.name}: maior que 15MB.`);
+        continue;
+      }
+      validos.push(arq);
+    }
+
+    if (validos.length === 0) {
+      setMsg(avisos.join(" "));
+      return;
+    }
+
+    setEnviando(true);
+    setMsg(avisos.join(" "));
+    try {
+      const form = new FormData();
+      validos.forEach((arq) => form.append("files", arq));
+      const res = await fetch(`${API_BASE}/notas-fiscais/upload`, { method: "POST", body: form });
+      if (!res.ok) {
+        setMsg(await mensagemDeErroHttp(res, "Erro ao enviar notas fiscais."));
+        return;
+      }
+      const data = await res.json();
+      if (data.status === "ok") {
+        setPendentes((prev) => [...(data.itens || []), ...prev]);
+        const novosManuais: NotaManualPendente[] = (data.manuais || []).map((m: any) => ({
+          ...m,
+          item: {
+            id: m.token,
+            numeroNota: m.dados?.numeroNota || "",
+            cliente: m.dados?.cliente || "",
+            cnpjTomador: m.dados?.cnpjTomador || "",
+            mesReferencia: m.dados?.mesReferencia || null,
+            anoReferencia: m.dados?.anoReferencia || null,
+            dataEmissao: m.dados?.dataEmissao || "",
+            vencimento: m.dados?.vencimento || "",
+            valor: Number(m.dados?.valor || 0),
+            codigoVerificacao: m.dados?.codigoVerificacao || "",
+            arquivoNomeOriginal: m.arquivoNomeOriginal,
+            temArquivo: true,
+            criadoEm: "",
+            financeiroId: "",
+            cancelada: false,
+            dataRecebimento: "",
+          },
+        }));
+        setManuais((prev) => [...novosManuais, ...prev]);
+        const errosServidor = (data.erros || []).map((er: any) => `${er.arquivo}: ${er.erro}`);
+        setMsg([...avisos, ...errosServidor].filter(Boolean).join(" "));
+        await carregar();
+        onMudou?.();
+      } else {
+        setMsg("Erro ao enviar notas fiscais.");
+      }
+    } catch (err) {
+      setMsg(`Erro ao enviar notas fiscais: ${err}`);
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  function mudarManual(token: string, campo: keyof NotaFiscalItem, valor: any) {
+    setManuais((prev) => prev.map((m) => (m.token === token ? { ...m, item: { ...m.item, [campo]: valor } } : m)));
+  }
+
+  async function salvarManual(m: NotaManualPendente) {
+    const it = m.item;
+    const faltando: string[] = [];
+    if (!it.numeroNota.trim()) faltando.push("número da nota");
+    if (!it.cliente.trim()) faltando.push("cliente");
+    if (!(Number(it.valor) > 0)) faltando.push("valor");
+    if (!it.mesReferencia || !it.anoReferencia) faltando.push("mês/ano de referência");
+    if (faltando.length) {
+      setMsg(`${m.arquivoNomeOriginal}: preencha antes de salvar — ${faltando.join(", ")}.`);
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/notas-fiscais/manual`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: m.token,
+          numeroNota: it.numeroNota,
+          cliente: it.cliente,
+          cnpjTomador: it.cnpjTomador,
+          mesReferencia: it.mesReferencia,
+          anoReferencia: it.anoReferencia,
+          dataEmissao: it.dataEmissao,
+          vencimento: it.vencimento,
+          valor: Number(it.valor),
+          codigoVerificacao: it.codigoVerificacao,
+        }),
+      });
+      if (!res.ok) {
+        setMsg(`${m.arquivoNomeOriginal}: ${await mensagemDeErroHttp(res, "Erro ao salvar a nota.")}`);
+        return;
+      }
+      const data = await res.json();
+      setManuais((prev) => prev.filter((x) => x.token !== m.token));
+      // segue o fluxo normal: cartão de conferência com sugestão de vínculo
+      if (data.item) setPendentes((prev) => [data.item, ...prev]);
+      setMsg("");
+      await carregar();
+      onMudou?.();
+    } catch (err) {
+      setMsg(`Erro ao salvar: ${err}`);
+    }
+  }
+
+  async function descartarManual(m: NotaManualPendente) {
+    try {
+      const res = await fetch(`${API_BASE}/notas-fiscais/manual/${m.token}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 404) {
+        setMsg(await mensagemDeErroHttp(res, "Erro ao descartar o PDF."));
+        return;
+      }
+      setManuais((prev) => prev.filter((x) => x.token !== m.token));
+    } catch (err) {
+      setMsg(`Erro ao descartar: ${err}`);
+    }
+  }
+
+  function mudarPendente(id: string, campo: keyof NotaFiscalItem, valor: any) {
+    setPendentes((prev) => prev.map((p) => (p.id === id ? { ...p, [campo]: valor } : p)));
+  }
+
+  async function salvarItem(item: NotaFiscalItem, isPendente: boolean) {
+    try {
+      const res = await fetch(`${API_BASE}/notas-fiscais/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          numeroNota: item.numeroNota,
+          cliente: item.cliente,
+          cnpjTomador: item.cnpjTomador,
+          mesReferencia: item.mesReferencia,
+          anoReferencia: item.anoReferencia,
+          dataEmissao: item.dataEmissao,
+          vencimento: item.vencimento,
+          valor: item.valor,
+          codigoVerificacao: item.codigoVerificacao,
+        }),
+      });
+      if (!res.ok) {
+        setMsg(await mensagemDeErroHttp(res, "Erro ao salvar os dados da nota."));
+        return;
+      }
+      const data = await res.json();
+      if (data.status !== "ok") {
+        setMsg("Erro ao salvar os dados da nota.");
+        return;
+      }
+      if (isPendente) {
+        setPendentes((prev) => prev.filter((p) => p.id !== item.id));
+      } else {
+        setEditando(null);
+      }
+      await carregar();
+      onMudou?.();
+    } catch (err) {
+      setMsg(`Erro ao salvar: ${err}`);
+    }
+  }
+
+  async function vincular(item: NotaFiscalItem, financeiroId: string, isPendente: boolean) {
+    try {
+      const res = await fetch(`${API_BASE}/vinculos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lancamentoId: financeiroId, notaId: item.id, origem: "sugerido-confirmado" }),
+      });
+      if (res.status === 409) {
+        const corpo = await res.json();
+        const detalhe = corpo?.detail?.conflito;
+        if (detalhe) {
+          setConflito({ ...detalhe, _origem: { item, financeiroId, isPendente } });
+        } else {
+          setMsg("Financeiro e nota têm status incompatíveis.");
+        }
+        return;
+      }
+      const data = await res.json();
+      if (data.status !== "ok") {
+        setMsg(data.erro || "Erro ao vincular nota ao lançamento.");
+        return;
+      }
+      if (isPendente) {
+        setPendentes((prev) => prev.filter((p) => p.id !== item.id));
+      }
+      setVinculandoId(null);
+      await carregar();
+      onMudou?.();
+    } catch (err) {
+      setMsg(`Erro ao vincular: ${err}`);
+    }
+  }
+
+  async function resolverConflito(lado: "financeiro" | "nota") {
+    if (!conflito) return;
+    const { item, financeiroId, isPendente } = conflito._origem;
+    try {
+      const res = await fetch(`${API_BASE}/vinculos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lancamentoId: financeiroId,
+          notaId: item.id,
+          origem: "sugerido-confirmado",
+          resolverConflito: lado,
+        }),
+      });
+      const data = await res.json();
+      if (data.status !== "ok") {
+        setMsg(data.erro || "Erro ao resolver o conflito.");
+        return;
+      }
+      if (isPendente) {
+        setPendentes((prev) => prev.filter((p) => p.id !== item.id));
+      }
+      setConflito(null);
+      setVinculandoId(null);
+      await carregar();
+      onMudou?.();
+    } catch (err) {
+      setMsg(`Erro ao resolver o conflito: ${err}`);
+    }
+  }
+
+  function ignorarSugestao(id: string) {
+    setPendentes((prev) => prev.map((p) => (p.id === id ? { ...p, sugestaoFinanceiroId: null } : p)));
+  }
+
+  async function visualizar(item: NotaFiscalItem) {
+    const chave = `ver-${item.id}`;
+    setCarregandoArquivo(chave);
+    setMsg("");
+    try {
+      await abrirArquivoAutenticado(`${API_BASE}/notas-fiscais/${item.id}/arquivo`);
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Erro ao abrir o arquivo.");
+    } finally {
+      setCarregandoArquivo(null);
+    }
+  }
+
+  async function baixar(item: NotaFiscalItem) {
+    const chave = `baixar-${item.id}`;
+    setCarregandoArquivo(chave);
+    setMsg("");
+    try {
+      await baixarArquivoAutenticado(
+        `${API_BASE}/notas-fiscais/${item.id}/arquivo?baixar=1`,
+        item.arquivoNomeOriginal || `nota-${item.numeroNota || item.id}.pdf`
+      );
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Erro ao baixar o arquivo.");
+    } finally {
+      setCarregandoArquivo(null);
+    }
+  }
+
+  async function excluir(item: NotaFiscalItem) {
+    if (!confirm(`Excluir a nota fiscal ${item.numeroNota || ""} de "${item.cliente}"?`)) return;
+    await fetch(`${API_BASE}/notas-fiscais/${item.id}`, { method: "DELETE" });
+    setPendentes((prev) => prev.filter((p) => p.id !== item.id));
+    if (editando?.id === item.id) setEditando(null);
+    await carregar();
+    onMudou?.();
+  }
+
+  async function alternarCancelada(item: NotaFiscalItem) {
+    try {
+      const res = await fetch(`${API_BASE}/notas-fiscais/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cancelada: !item.cancelada }),
+      });
+      const data = await res.json();
+      if (data.status !== "ok") {
+        setMsg("Erro ao atualizar o cancelamento da nota.");
+        return;
+      }
+      await carregar();
+      onMudou?.();
+    } catch (err) {
+      setMsg(`Erro ao atualizar o cancelamento: ${err}`);
+    }
+  }
+
+  async function atualizarDataRecebimento(item: NotaFiscalItem, dataRecebimento: string) {
+    try {
+      const res = await fetch(`${API_BASE}/notas-fiscais/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dataRecebimento }),
+      });
+      const data = await res.json();
+      if (data.status !== "ok") {
+        setMsg("Erro ao atualizar o status de recebimento da nota.");
+        return;
+      }
+      await carregar();
+      onMudou?.();
+    } catch (err) {
+      setMsg(`Erro ao atualizar recebimento: ${err}`);
+    }
+  }
+
+  async function marcarRecebida(item: NotaFiscalItem) {
+    const data = window.prompt("Data de recebimento (AAAA-MM-DD):", item.dataRecebimento || hojeISO());
+    if (data === null) return;
+    await atualizarDataRecebimento(item, data || hojeISO());
+  }
+
+  async function desfazerRecebida(item: NotaFiscalItem) {
+    await atualizarDataRecebimento(item, "");
+  }
+
+  function toggleSelecionado(id: string) {
+    setSelecionados((prev) => {
+      const novo = new Set(prev);
+      if (novo.has(id)) novo.delete(id);
+      else novo.add(id);
+      return novo;
+    });
+  }
+
+  const idsSelecionaveis = useMemo(() => {
+    return [...gruposOrdenados.comReferencia, ...gruposOrdenados.semReferencia]
+      .filter((i) => !i.cancelada)
+      .map((i) => i.id);
+  }, [gruposOrdenados]);
+
+  const todosSelecionados = idsSelecionaveis.length > 0 && idsSelecionaveis.every((id) => selecionados.has(id));
+
+  function toggleTodos() {
+    setSelecionados(todosSelecionados ? new Set() : new Set(idsSelecionaveis));
+  }
+
+  async function marcarSelecionadasRecebidas() {
+    if (selecionados.size === 0) return;
+    setMarcandoLote(true);
+    try {
+      const res = await fetch(`${API_BASE}/notas-fiscais/marcar-recebidas`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: Array.from(selecionados), dataRecebimento: dataLote || hojeISO() }),
+      });
+      const data = await res.json();
+      if (data.status !== "ok") {
+        setMsg("Erro ao marcar as notas selecionadas como recebidas.");
+        return;
+      }
+      const qtdAtualizadas = (data.atualizadas || []).length;
+      const qtdPuladas = (data.puladas || []).length;
+      setMsg(
+        qtdPuladas > 0
+          ? `${qtdAtualizadas} nota(s) marcada(s) como recebida(s). ${qtdPuladas} pulada(s) por estarem canceladas.`
+          : `${qtdAtualizadas} nota(s) marcada(s) como recebida(s).`
+      );
+      setSelecionados(new Set());
+      await carregar();
+      onMudou?.();
+    } catch (err) {
+      setMsg(`Erro ao marcar em lote: ${err}`);
+    } finally {
+      setMarcandoLote(false);
+    }
+  }
+
+  function financeiroPorId(id?: string | null) {
+    if (!id) return null;
+    return financeiro.find((f) => f.id === id) || null;
+  }
+
+  const [candidatosVinculo, setCandidatosVinculo] = useState<FinanceiroResumo[]>([]);
+
+  async function abrirComposicao(item: NotaFiscalItem) {
+    if (compondoId === item.id) {
+      setCompondoId(null);
+      return;
+    }
+    setMsg("");
+    setComposicao(null);
+    setCompondoId(item.id);
+    try {
+      const res = await fetch(`${API_BASE}/notas-fiscais/${item.id}/composicao`);
+      if (!res.ok) {
+        setMsg(await mensagemDeErroHttp(res, "Erro ao carregar a composição da nota."));
+        setCompondoId(null);
+        return;
+      }
+      const data: ComposicaoNota = await res.json();
+      setComposicao(data);
+      setCompSelecionados(new Set(data.combinacaoSugerida || []));
+    } catch (err) {
+      setMsg(`Erro ao carregar a composição: ${err}`);
+      setCompondoId(null);
+    }
+  }
+
+  function alternarCompSelecionado(id: string) {
+    setCompSelecionados((prev) => {
+      const novo = new Set(prev);
+      if (novo.has(id)) novo.delete(id);
+      else novo.add(id);
+      return novo;
+    });
+  }
+
+  async function salvarComposicao(item: NotaFiscalItem) {
+    if (!composicao || compSelecionados.size === 0) return;
+    setSalvandoComp(true);
+    setMsg("");
+    try {
+      // um de cada vez: o servidor confere a soma a cada lançamento e recusa o que passar
+      for (const lancId of Array.from(compSelecionados)) {
+        const res = await fetch(`${API_BASE}/vinculos`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lancamentoId: lancId, notaId: item.id, origem: "composicao", adicionarANota: true }),
+        });
+        if (!res.ok) {
+          setMsg(await mensagemDeErroHttp(res, "Não foi possível ligar esse lançamento à nota."));
+          break;
+        }
+        const data = await res.json();
+        if (data.status !== "ok") {
+          setMsg(data.erro || "Não foi possível ligar esse lançamento à nota.");
+          break;
+        }
+      }
+      setCompondoId(null);
+      await carregar();
+      onMudou?.();
+    } catch (err) {
+      setMsg(`Erro ao compor a nota: ${err}`);
+    } finally {
+      setSalvandoComp(false);
+    }
+  }
+
+  async function abrirPickerVinculo(item: NotaFiscalItem) {
+    if (vinculandoId === item.id) {
+      setVinculandoId(null);
+      return;
+    }
+    setVinculandoId(item.id);
+    setCandidatosVinculo([]);
+    try {
+      const res = await fetch(`${API_BASE}/vinculos/sugestoes?tipo=nota&id=${item.id}`);
+      const data = await res.json();
+      if (data.status === "ok") {
+        setCandidatosVinculo(data.candidatosFinanceiro || []);
+      }
+    } catch {
+      // silencioso - o select cai pro fallback (lista completa de financeiro)
+    }
+  }
+
+  return (
+    <div className="nfe-page">
+      <style>{`
+        .nfe-page { display: grid; gap: 16px; }
+        .nfe-head { display: flex; justify-content: space-between; gap: 14px; align-items: end; flex-wrap: wrap; }
+        .nfe-title h2 { margin: 0; font-size: 22px; font-weight: 1000; color: #111827; }
+        .nfe-title p { margin: 6px 0 0; color: #6b7280; font-weight: 800; font-size: 13px; }
+        .nfe-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .nfe-input, .nfe-select { border: 1px solid #d1d5db; border-radius: 10px; padding: 10px 12px; font-size: 13px; font-weight: 800; background: white; }
+        .nfe-btn { border: 0; border-radius: 10px; padding: 10px 13px; font-weight: 900; cursor: pointer; background: #e5e7eb; color: #111; text-decoration: none; display: inline-flex; align-items: center; }
+        .nfe-btn-green { background: #00B050; color: white; }
+        .nfe-btn-red { background: #fee2e2; color: #991b1b; }
+        .nfe-btn[disabled] { opacity: .6; cursor: default; }
+        .nfe-card { background: white; border: 1px solid #e5e7eb; border-radius: 22px; box-shadow: 0 10px 24px rgba(0,0,0,.06); overflow: hidden; overflow-x: auto; }
+        .nfe-total { font-size: 22px; font-weight: 1000; color: #00B050; }
+        .nfe-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .nfe-table th { text-align: left; background: #f9fafb; padding: 12px; border-bottom: 1px solid #e5e7eb; font-weight: 1000; color: #374151; white-space: nowrap; }
+        .nfe-table td { padding: 12px; border-bottom: 1px solid #eef0f2; font-weight: 750; vertical-align: middle; }
+        .nfe-empty { padding: 22px; color: #6b7280; font-weight: 900; }
+        .nfe-msg { padding: 12px; border-radius: 14px; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; font-weight: 900; }
+        .nfe-confirm-card { background: #f8fafc; border: 1px dashed #94a3b8; border-radius: 18px; padding: 16px; display: grid; gap: 12px; }
+        .nfe-confirm-title { font-weight: 1000; color: #111827; }
+        .nfe-confirm-aviso { font-weight: 700; color: #b45309; }
+        .nfe-padrao-detectado { margin: 6px 0 10px; font-size: 13px; color: #1e3a8a; background: #eff6ff; border: 1px solid #bfdbfe; padding: 6px 10px; border-radius: 10px; display: inline-block; }
+        .nfe-confirm-card .nfe-msg { margin-bottom: 10px; }
+        .nfe-badge-padrao { font-size: 10px; font-weight: 800; color: #6b7280; margin-top: 2px; white-space: nowrap; }
+        .nfe-confirm-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        .nfe-confirm-field label { display: block; font-size: 11px; font-weight: 1000; color: #6b7280; margin-bottom: 4px; }
+        .nfe-confirm-field input, .nfe-confirm-field select { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px; font-size: 13px; box-sizing: border-box; }
+        .nfe-sugestao { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e3a8a; border-radius: 12px; padding: 10px 12px; font-size: 13px; font-weight: 700; }
+        .nfe-badge-cancelada { display: inline-flex; margin-left: 8px; padding: 3px 9px; border-radius: 999px; background: #fee2e2; color: #991b1b; font-size: 11px; font-weight: 1000; }
+        .nfe-linha-cancelada { opacity: .55; }
+        .nfe-linha-vencida { background: #fef2f2; }
+        .nfe-grupo-header td { background: #f9fafb; font-weight: 1000; color: #374151; padding: 8px 12px !important; }
+        .nfe-badge-status { display: inline-flex; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 1000; white-space: nowrap; }
+        .nfe-badge-aberta { background: #e5e7eb; color: #374151; }
+        .nfe-badge-recebida { background: #dcfce7; color: #166534; }
+        .nfe-badge-vencida { background: #fee2e2; color: #991b1b; }
+        .nfe-lote-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 14px; padding: 10px 14px; }
+        .nfe-lote-bar strong { color: #1e3a8a; }
+        .nfe-comp { margin-top: 10px; border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 14px; padding: 12px; font-size: 13px; }
+        .nfe-comp h4 { margin: 0 0 8px; font-size: 14px; font-weight: 1000; color: #1e3a8a; }
+        .nfe-comp-linha { display: flex; gap: 8px; align-items: center; padding: 4px 0; font-weight: 700; }
+        .nfe-comp-total { margin: 10px 0; font-weight: 1000; }
+        .nfe-comp-total.ok { color: #166534; } .nfe-comp-total.falta { color: #92400e; } .nfe-comp-total.excede { color: #991b1b; }
+        .nfe-badge-comp { font-size: 11px; font-weight: 800; margin-top: 4px; color: #1e3a8a; }
+        .nfe-badge-comp.falta { color: #92400e; }
+        .nfe-picker-vinculo { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+        .nfe-picker-vinculo select { border: 1px solid #d1d5db; border-radius: 8px; padding: 8px; font-size: 12px; font-weight: 700; max-width: 320px; }
+
+        @media (max-width: 900px) {
+          .nfe-confirm-grid { grid-template-columns: 1fr 1fr; }
+        }
+
+        @media (max-width: 800px) {
+          .nfe-table thead { display: none; }
+          .nfe-table, .nfe-table tbody, .nfe-table tr, .nfe-table td { display: block; width: 100%; }
+          .nfe-table tr { border-bottom: 8px solid #f3f4f6; padding: 10px 0; }
+          .nfe-table td { border-bottom: none; padding: 6px 12px; }
+          .nfe-table td::before { content: attr(data-label); display: block; font-size: 11px; font-weight: 1000; color: #9ca3af; margin-bottom: 2px; }
+          .nfe-confirm-grid { grid-template-columns: 1fr; }
+        }
+      `}</style>
+
+      <div className="nfe-head">
+        <div className="nfe-title">
+          <h2>Notas Fiscais Emitidas</h2>
+          <p>Guarde aqui as notas fiscais (NFS-e) emitidas. O sistema reconhece sozinho os dois padrões: Emissor Nacional (DANFSe, desde nov/2026) e o antigo da Prefeitura de SP.</p>
+        </div>
+        <div className="nfe-actions">
+          <input
+            ref={inputRef}
+            type="file"
+            accept="application/pdf"
+            multiple
+            style={{ display: "none" }}
+            onChange={onArquivosSelecionados}
+          />
+          <button className="nfe-btn nfe-btn-green" onClick={abrirSeletor} disabled={enviando}>
+            {enviando ? "Enviando..." : "Subir Nota Fiscal (PDF)"}
+          </button>
+          <button className="nfe-btn" onClick={carregar} disabled={carregando}>
+            {carregando ? "Atualizando..." : "Atualizar"}
+          </button>
+        </div>
+      </div>
+
+      {msg && <div className="nfe-msg">{msg}</div>}
+
+      {conflito && (
+        <ConflitoVinculoDialog conflito={conflito} onResolver={resolverConflito} onFechar={() => setConflito(null)} />
+      )}
+
+      {manuais.map((m) => (
+        <CardNotaEdicao
+          key={m.token}
+          item={m.item}
+          onMudar={(campo, valor) => mudarManual(m.token, campo, valor)}
+          onSalvar={() => salvarManual(m)}
+          onFechar={() => descartarManual(m)}
+          textoFechar="Descartar este PDF"
+          textoSalvar="Salvar nota"
+          padraoNome={m.padraoNome}
+          avisoManual={m.mensagem}
+          avisos={m.avisos}
+        />
+      ))}
+
+      {pendentes.map((item) => (
+        <CardNotaEdicao
+          key={item.id}
+          padraoNome={item.padraoNome}
+          avisos={item.avisos}
+          item={item}
+          onMudar={(campo, valor) => mudarPendente(item.id, campo, valor)}
+          onSalvar={() => salvarItem(item, true)}
+          onFechar={() => setPendentes((prev) => prev.filter((p) => p.id !== item.id))}
+          textoFechar="Deixar para depois"
+          sugestao={financeiroPorId(item.sugestaoFinanceiroId)}
+          onAceitarSugestao={() => item.sugestaoFinanceiroId && vincular(item, item.sugestaoFinanceiroId, true)}
+          onIgnorarSugestao={() => ignorarSugestao(item.id)}
+        />
+      ))}
+
+      {editando && (
+        <CardNotaEdicao
+          item={editando}
+          onMudar={(campo, valor) => setEditando((prev) => (prev ? { ...prev, [campo]: valor } : prev))}
+          onSalvar={() => salvarItem(editando, false)}
+          onFechar={() => setEditando(null)}
+          textoFechar="Cancelar"
+        />
+      )}
+
+      <div className="nfe-actions">
+        <input
+          className="nfe-input"
+          placeholder="Buscar por cliente ou nº da nota..."
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+        />
+        <select className="nfe-select" value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)}>
+          {clientesDisponiveis.map((c) => <option key={c.chave} value={c.chave}>{c.nome}</option>)}
+        </select>
+        <select className="nfe-select" value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)}>
+          <option>Todos</option>
+          {NOMES_MESES.slice(1).map((m) => <option key={m}>{m}</option>)}
+        </select>
+        <select className="nfe-select" value={anoFiltro} onChange={(e) => setAnoFiltro(e.target.value)}>
+          {anosDisponiveis.map((a) => <option key={a}>{a}</option>)}
+        </select>
+        <select className="nfe-select" value={statusFiltro} onChange={(e) => setStatusFiltro(e.target.value)}>
+          <option>Todos</option>
+          <option>Em aberto</option>
+          <option>Recebidas</option>
+          <option>Em atraso</option>
+          <option>Canceladas</option>
+        </select>
+        <button className="nfe-btn" onClick={() => setOrdemAscendente((v) => !v)}>
+          {ordemAscendente ? "Mais antigas primeiro" : "Mais recentes primeiro"}
+        </button>
+      </div>
+
+      <div className="nfe-total">Total filtrado: {brl(totalFiltrado)}</div>
+
+      {selecionados.size > 0 && (
+        <div className="nfe-lote-bar">
+          <strong>{selecionados.size} nota(s) selecionada(s)</strong>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 800, fontSize: 13 }}>
+            Data de recebimento:
+            <input
+              className="nfe-input"
+              type="date"
+              value={dataLote}
+              onChange={(e) => setDataLote(e.target.value)}
+            />
+          </label>
+          <button className="nfe-btn nfe-btn-green" onClick={marcarSelecionadasRecebidas} disabled={marcandoLote}>
+            {marcandoLote ? "Marcando..." : "Marcar selecionadas como recebidas"}
+          </button>
+          <button className="nfe-btn" onClick={() => setSelecionados(new Set())}>Limpar seleção</button>
+        </div>
+      )}
+
+      <div className="nfe-card">
+        <table className="nfe-table">
+          <thead>
+            <tr>
+              <th>
+                <input
+                  type="checkbox"
+                  checked={todosSelecionados}
+                  onChange={toggleTodos}
+                  title="Selecionar todas as notas filtradas (exceto canceladas)"
+                />
+              </th>
+              <th>Nº Nota</th>
+              <th>Cliente</th>
+              <th>Mês Referência</th>
+              <th>Status</th>
+              <th>Emissão</th>
+              <th>Vencimento</th>
+              <th>Valor</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {gruposOrdenados.comReferencia.map((item) => renderLinhaNota(item))}
+            {gruposOrdenados.semReferencia.length > 0 && (
+              <tr className="nfe-grupo-header">
+                <td colSpan={9}>Sem referência</td>
+              </tr>
+            )}
+            {gruposOrdenados.semReferencia.map((item) => renderLinhaNota(item))}
+          </tbody>
+        </table>
+
+        {filtrados.length === 0 && (
+          <div className="nfe-empty">Nenhuma nota fiscal encontrada. Use "Subir Nota Fiscal (PDF)" para importar.</div>
+        )}
+      </div>
+    </div>
+  );
+
+  function renderComposicao(item: NotaFiscalItem) {
+    if (!composicao) return <div className="nfe-comp">Carregando...</div>;
+    const extra = composicao.candidatos.filter((c) => compSelecionados.has(c.id)).reduce((a, c) => a + Number(c.valor || 0), 0);
+    const total = composicao.soma + extra;
+    const excede = total > composicao.valorNota + 0.01;
+    const falta = composicao.valorNota - total;
+    const classe = excede ? "excede" : falta > 0.01 ? "falta" : "ok";
+    return (
+      <div className="nfe-comp">
+        <h4>Compor nota {item.numeroNota || ""} — valor da nota {brl(composicao.valorNota)}</h4>
+        <div style={{ marginBottom: 6 }}>Junte aqui os lançamentos/relatórios do mesmo cliente que esta nota cobre. A soma nunca pode passar do valor da nota.</div>
+        <strong>Já ligados a esta nota:</strong>
+        {composicao.itens.length === 0 && <div className="nfe-comp-linha">nenhum ainda</div>}
+        {composicao.itens.map((l) => (
+          <div key={l.id} className="nfe-comp-linha">✓ {l.cliente} — {l.referencia || "-"} — {brl(l.valor)}</div>
+        ))}
+        <div style={{ marginTop: 8 }}><strong>Adicionar:</strong></div>
+        {composicao.candidatos.length === 0 && (
+          <div className="nfe-comp-linha">Nenhum lançamento desse cliente, sem nota, cabe no valor que falta.</div>
+        )}
+        {composicao.candidatos.map((l) => (
+          <label key={l.id} className="nfe-comp-linha">
+            <input type="checkbox" checked={compSelecionados.has(l.id)} onChange={() => alternarCompSelecionado(l.id)} />
+            {l.cliente} — {l.referencia || "-"} — {brl(l.valor)}
+          </label>
+        ))}
+        <div className={`nfe-comp-total ${classe}`}>
+          Total: {brl(total)} de {brl(composicao.valorNota)}
+          {excede && ` — passa ${brl(total - composicao.valorNota)} do valor da nota. Desmarque algum.`}
+          {!excede && falta > 0.01 && ` — falta ${brl(falta)} (pode salvar e completar depois).`}
+          {classe === "ok" && " — fecha certinho com a nota."}
+        </div>
+        <div className="nfe-actions">
+          <button className="nfe-btn nfe-btn-green" disabled={excede || compSelecionados.size === 0 || salvandoComp} onClick={() => salvarComposicao(item)}>
+            {salvandoComp ? "Salvando..." : "Salvar composição"}
+          </button>
+          <button className="nfe-btn" onClick={() => setCompondoId(null)}>Fechar</button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderLinhaNota(item: NotaFiscalItem) {
+    const status = statusNota(item);
+    const linhaClasse = item.cancelada ? "nfe-linha-cancelada" : status === "vencida" ? "nfe-linha-vencida" : "";
+    return (
+      <tr key={item.id} className={linhaClasse}>
+        <td data-label="Selecionar">
+          {!item.cancelada && (
+            <input
+              type="checkbox"
+              checked={selecionados.has(item.id)}
+              onChange={() => toggleSelecionado(item.id)}
+            />
+          )}
+        </td>
+        <td data-label="Nº Nota">
+          {item.numeroNota || "-"}
+          <div className="nfe-badge-padrao">{PADRAO_LABEL[item.padraoNota || "sp_prefeitura"] || item.padraoNota}</div>
+        </td>
+        <td data-label="Cliente">
+          {item.cliente || "-"}
+          {item.cancelada && <> <span className="nfe-badge-cancelada">CANCELADA</span></>}
+        </td>
+        <td data-label="Mês Referência">{referenciaLabel(item)}</td>
+        <td data-label="Status">
+          <span className={`nfe-badge-status nfe-badge-${status}`}>{STATUS_LABEL[status]}</span>
+          {status === "recebida" && (
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", marginTop: 4 }}>
+              em {dataCurtaBR(item.dataRecebimento)}
+            </div>
+          )}
+        </td>
+        <td data-label="Emissão">{dataCurtaBR(item.dataEmissao)}</td>
+        <td data-label="Vencimento">{dataCurtaBR(item.vencimento)}</td>
+        <td data-label="Valor">
+          {brl(item.valor)}
+          {(item.qtdLancamentos || 0) > 1 && (
+            <div className={`nfe-badge-comp${(item.somaLancamentos || 0) < item.valor - 0.01 ? " falta" : ""}`}>
+              {item.qtdLancamentos} lançamentos: {brl(item.somaLancamentos || 0)}
+            </div>
+          )}
+          {(item.qtdLancamentos || 0) >= 1 && !item.cancelada && (item.somaLancamentos || 0) < item.valor - 0.01 && (
+            <div className="nfe-badge-comp falta">falta {brl(item.valor - (item.somaLancamentos || 0))} em lançamentos</div>
+          )}
+        </td>
+        <td data-label="Ações">
+          <div className="nfe-actions">
+            {item.temArquivo && (
+              <>
+                <button className="nfe-btn" onClick={() => visualizar(item)} disabled={carregandoArquivo === `ver-${item.id}`}>
+                  {carregandoArquivo === `ver-${item.id}` ? "Abrindo..." : "Visualizar"}
+                </button>
+                <button className="nfe-btn" onClick={() => baixar(item)} disabled={carregandoArquivo === `baixar-${item.id}`}>
+                  {carregandoArquivo === `baixar-${item.id}` ? "Baixando..." : "Baixar"}
+                </button>
+              </>
+            )}
+            <button className="nfe-btn" onClick={() => setEditando(item)}>Editar</button>
+            {!item.cancelada && (
+              status === "recebida" ? (
+                <button className="nfe-btn" onClick={() => desfazerRecebida(item)}>Desfazer recebimento</button>
+              ) : (
+                <button className="nfe-btn nfe-btn-green" onClick={() => marcarRecebida(item)}>Marcar como recebida</button>
+              )
+            )}
+            <button className="nfe-btn" onClick={() => alternarCancelada(item)}>
+              {item.cancelada ? "Desfazer cancelamento" : "Marcar como cancelada"}
+            </button>
+            {!item.financeiroId && (
+              <button className="nfe-btn" onClick={() => abrirPickerVinculo(item)}>Vincular a existente</button>
+            )}
+            {!item.cancelada && (
+              <button className="nfe-btn" onClick={() => abrirComposicao(item)}>Compor nota (vários lançamentos)</button>
+            )}
+            <button className="nfe-btn nfe-btn-red" onClick={() => excluir(item)}>Excluir</button>
+          </div>
+          {compondoId === item.id && renderComposicao(item)}
+          {vinculandoId === item.id && (
+            <div className="nfe-picker-vinculo">
+              <select
+                defaultValue=""
+                onChange={(e) => {
+                  if (e.target.value) vincular(item, e.target.value, false);
+                }}
+              >
+                <option value="">Escolher lançamento do Financeiro...</option>
+                {(candidatosVinculo.length ? candidatosVinculo : financeiro).map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.cliente} — {brl(f.valor)} — {f.referencia || "-"}
+                  </option>
+                ))}
+              </select>
+              <button className="nfe-btn" onClick={() => setVinculandoId(null)}>Cancelar</button>
+            </div>
+          )}
+        </td>
+      </tr>
+    );
+  }
+}

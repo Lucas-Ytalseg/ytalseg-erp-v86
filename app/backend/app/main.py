@@ -1025,6 +1025,7 @@ def montar_dashboard_financeiro():
         if not v["lancamento_id"]:
             continue
         entrada = vinculos_financeiro.setdefault(v["lancamento_id"], {})
+        entrada["vinculoId"] = v["id"]  # pra tela poder desvincular só um lado
         if v["nota_id"]:
             entrada["notaId"] = v["nota_id"]
         if v["historico_id"]:
@@ -2112,6 +2113,43 @@ def excluir_vinculo(vinculo_id: str, sessao: dict = Depends(exigir_admin)):
     conn.commit()
     conn.close()
     return {"status": "ok", "id": vinculo_id}
+
+_COLUNA_DO_LADO = {"relatorio": "historico_id", "nota": "nota_id"}
+
+@app.delete("/vinculos/{vinculo_id}/lado/{lado}")
+def desvincular_lado(vinculo_id: str, lado: str, sessao: dict = Depends(exigir_admin)):
+    """Tira SÓ um lado do vínculo (o relatório ou a nota), sem apagar nada e sem desfazer
+    os outros lados - pra corrigir um vínculo feito errado. Se sobrar só um lado, o
+    vínculo deixa de ligar coisas e é removido inteiro (mesma regra da criação)."""
+    coluna = _COLUNA_DO_LADO.get(lado)
+    if not coluna:
+        raise HTTPException(status_code=400, detail="Lado inválido (use 'relatorio' ou 'nota').")
+    conn = conectar_db()
+    row = conn.execute("SELECT * FROM vinculos WHERE id = ?", (vinculo_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"status": "erro", "erro": "Vínculo não encontrado"}
+    if not row[coluna]:
+        conn.close()
+        return {"status": "erro", "erro": "Esse vínculo não tem " + ("relatório" if lado == "relatorio" else "nota") + " ligado."}
+    if lado == "nota" and conn.execute("SELECT 1 FROM nota_composicao WHERE nota_id = ?", (row["nota_id"],)).fetchone():
+        conn.close()
+        return {"status": "erro", "erro": "Essa nota tem vários lançamentos (nota composta). Tire os lançamentos extras da nota antes de desvincular."}
+
+    restantes = [c for c in ("lancamento_id", "nota_id", "historico_id") if c != coluna and row[c]]
+    if len(restantes) < 2:
+        _desvincular(conn, row)  # sobra um lado só: some o vínculo (limpa os espelhos da nota, se houver)
+    else:
+        conn.execute(f"UPDATE vinculos SET {coluna} = NULL, atualizado_em = ? WHERE id = ?", (datetime.now().isoformat(), vinculo_id))
+        if lado == "nota":
+            conn.execute("UPDATE notas_fiscais SET financeiro_id = '' WHERE id = ?", (row["nota_id"],))
+            conn.execute(
+                "UPDATE financeiro SET nota_enviada = 0, nota = '', data_envio_nota = '' WHERE id = ?",
+                (row["lancamento_id"],),
+            )
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "id": vinculo_id, "lado": lado}
 
 @app.post("/financeiro")
 def salvar_financeiro(payload: FinanceiroPayload, sessao: dict = Depends(exigir_admin)):

@@ -50,7 +50,7 @@ type Lancamento = {
   anoReferencia?: number | null;
 };
 
-type VinculoInfo = { notaId?: string; historicoPdfId?: string };
+type VinculoInfo = { vinculoId?: string; notaId?: string; historicoPdfId?: string };
 
 type DocResumo = { id: string; temArquivo: boolean };
 
@@ -365,6 +365,30 @@ ${form.descricao}
     }
   }
 
+  // Tira só a nota ou só o relatório do lançamento (vinculou errado) - não apaga nada:
+  // o PDF continua no sistema e volta a aparecer pra ser vinculado de novo.
+  async function desvincular(lancId: string, tipo: "nota" | "relatorio") {
+    const vinculoId = vinculosFinanceiro[lancId]?.vinculoId;
+    if (!vinculoId) return;
+    const oque = tipo === "nota" ? "a nota fiscal" : "o relatório";
+    if (!confirm(`Desvincular ${oque} deste lançamento?\n\nNada é apagado: ${oque} continua no sistema e pode ser vinculado de novo.`)) return;
+    setVinculando(true);
+    setErro("");
+    try {
+      const res = await fetch(`${API_BASE}/vinculos/${vinculoId}/lado/${tipo}`, { method: "DELETE" });
+      const data = await res.json();
+      if (data.status !== "ok") {
+        setErro(data.erro || data.detail || "Não foi possível desvincular.");
+        return;
+      }
+      await carregar();
+    } catch (err) {
+      setErro(`Erro ao desvincular: ${err}`);
+    } finally {
+      setVinculando(false);
+    }
+  }
+
   async function verArquivo(tipo: "nota" | "relatorio", id: string) {
     const chave = `${tipo}-${id}`;
     setCarregandoArquivo(chave);
@@ -605,6 +629,16 @@ ${form.descricao}
                       {historico?.temArquivo && (
                         <button className="btn-gray" onClick={() => verArquivo("relatorio", historico.id)} disabled={carregandoArquivo === `relatorio-${historico.id}`}>
                           {carregandoArquivo === `relatorio-${historico.id}` ? "Abrindo..." : "Ver relatório"}
+                        </button>
+                      )}
+                      {vinculosFinanceiro[l.id]?.vinculoId && vinculosFinanceiro[l.id]?.notaId && (
+                        <button className="btn-gray" disabled={vinculando} onClick={() => desvincular(l.id, "nota")} title="Tira a nota deste lançamento sem apagar nada">
+                          Desvincular nota
+                        </button>
+                      )}
+                      {vinculosFinanceiro[l.id]?.vinculoId && vinculosFinanceiro[l.id]?.historicoPdfId && (
+                        <button className="btn-gray" disabled={vinculando} onClick={() => desvincular(l.id, "relatorio")} title="Tira o relatório deste lançamento sem apagar nada">
+                          Desvincular relatório
                         </button>
                       )}
                       {!nota?.temArquivo && (
