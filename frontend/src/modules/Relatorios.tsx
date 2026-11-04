@@ -284,17 +284,24 @@ export default function Relatorios() {
       return acc + diurna + noturna;
     }, 0);
 
-    const total_sabados = diasEditaveis
-      .filter((d) => d.tipo_dia === "sabado")
-      .reduce((acc, d) => acc + (d.diurna ? VALORES.sabado : 0) + (d.noturna ? VALORES.sabado : 0) + (d.adicional ? adicionalNoturno25(d.tipo_dia, d.feriado, VALORES) : 0), 0);
+    // Resumo por tipo de dia: cada dia entra numa linha só (feriado conta como
+    // domingo/feriado, mesmo caindo em dia útil ou sábado) e só com a diária base -
+    // o adicional noturno tem linha própria. Assim as linhas somam o valor da nota.
+    const baseDoDia = (d: DiaConferencia) =>
+      (d.diurna ? valorBase(d.tipo_dia, "diurna", d.feriado, VALORES) : 0) +
+      (d.noturna ? valorBase(d.tipo_dia, "noturna", d.feriado, VALORES) : 0);
+    const ehNormal = (d: DiaConferencia) => d.tipo_dia === "diaria" && !d.feriado;
+    const ehSabado = (d: DiaConferencia) => d.tipo_dia === "sabado" && !d.feriado;
+    const ehDomingoFeriado = (d: DiaConferencia) => d.tipo_dia === "domingo" || d.feriado;
 
-    const total_domingos_feriados = diasEditaveis
-      .filter((d) => d.tipo_dia === "domingo" || d.feriado)
-      .reduce((acc, d) => acc + (d.diurna ? VALORES.domingoFeriado : 0) + (d.noturna ? VALORES.domingoFeriado : 0) + (d.adicional ? adicionalNoturno25(d.tipo_dia, d.feriado, VALORES) : 0), 0);
+    const total_normais = diasEditaveis.filter(ehNormal).reduce((acc, d) => acc + baseDoDia(d), 0);
+    const total_sabados = diasEditaveis.filter(ehSabado).reduce((acc, d) => acc + baseDoDia(d), 0);
+    const total_domingos_feriados = diasEditaveis.filter(ehDomingoFeriado).reduce((acc, d) => acc + baseDoDia(d), 0);
 
     return {
-      dias_normais: diasEditaveis.filter((d) => d.tipo_dia === "diaria" && !d.feriado && (d.diurna || d.noturna)).length,
-      sabados: diasEditaveis.filter((d) => d.tipo_dia === "sabado" && (d.diurna || d.noturna)).length,
+      dias_normais: diasEditaveis.filter((d) => ehNormal(d) && (d.diurna || d.noturna)).length,
+      total_normais,
+      sabados: diasEditaveis.filter((d) => ehSabado(d) && (d.diurna || d.noturna)).length,
       domingos_feriados: diasEditaveis.filter((d) => (d.tipo_dia === "domingo" || d.feriado) && (d.diurna || d.noturna)).length,
       feriados: diasEditaveis.filter((d) => d.feriado).length,
       periodos_diurnos,
@@ -5559,7 +5566,7 @@ body.modo-interno .ytalseg-card-final .email-line{
                     <tr>
                       <td className="left">Diárias Normais</td>
                       <td>{resumo?.dias_normais || 0}</td>
-                      <td>{brl(resumo?.total_diarias || 0)}</td>
+                      <td>{brl(resumo?.total_normais || 0)}</td>
                     </tr>
                     <tr>
                       <td className="left">Sábados</td>
