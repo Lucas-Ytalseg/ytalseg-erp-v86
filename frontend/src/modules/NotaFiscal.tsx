@@ -433,10 +433,10 @@ ${form.descricao}
 
       <div className="abas-nf">
         {([
-          ["lancamentos", "Lançamentos / Dados"],
-          ["previa", "Prévia do pacote"],
           ["historico", "Histórico de notas"],
+          ["lancamentos", "Lançamentos / Dados"],
           ["emitidas", "Notas Fiscais Emitidas"],
+          ["previa", "Prévia do pacote"],
         ] as const).map(([id, rotulo]) => (
           <button key={id} className={`aba-nf${aba === id ? " ativa" : ""}`} onClick={() => setAba(id)}>
             {rotulo}

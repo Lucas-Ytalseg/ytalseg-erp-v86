@@ -322,25 +322,33 @@ export default function NotasFiscaisEmitidas({
     });
   }, [lista, busca, mesFiltro, anoFiltro, clienteFiltro, statusFiltro]);
 
-  // Ordena por referência (mês/ano) — decrescente por padrão, com desempate sempre
-  // alfabético por cliente. Itens sem mês+ano referência vão numa seção separada
-  // no final, ordenada só por cliente.
+  // V16.4: ordem pela DATA DE EMISSÃO (mais recente primeiro por padrão) e, no mesmo
+  // dia, pelo número da nota. Assim a numeração fica em sequência (868, 867, 866...) e a
+  // nota nº 1 do Emissor Nacional aparece no topo por ser a mais recente — mesmo com a
+  // numeração tendo recomeçado. Notas sem mês/ano de referência continuam numa seção
+  // separada no final (pra você ver que falta preencher), com a mesma ordem.
   const gruposOrdenados = useMemo(() => {
     const comReferencia = filtrados.filter((i) => i.mesReferencia && i.anoReferencia);
     const semReferencia = filtrados.filter((i) => !i.mesReferencia || !i.anoReferencia);
     const dir = ordemAscendente ? 1 : -1;
+    const numero = (i: NotaFiscalItem) => Number(String(i.numeroNota || "").replace(/\D/g, "")) || 0;
 
-    comReferencia.sort((a, b) => {
-      const anoA = a.anoReferencia || 0;
-      const anoB = b.anoReferencia || 0;
-      if (anoA !== anoB) return dir * (anoA - anoB);
-      const mesA = a.mesReferencia || 0;
-      const mesB = b.mesReferencia || 0;
-      if (mesA !== mesB) return dir * (mesA - mesB);
+    const porEmissao = (a: NotaFiscalItem, b: NotaFiscalItem) => {
+      const ea = a.dataEmissao || "";
+      const eb = b.dataEmissao || "";
+      if (ea !== eb) {
+        if (!ea) return 1; // sem data de emissão vai pro fim
+        if (!eb) return -1;
+        return dir * ea.localeCompare(eb);
+      }
+      const na = numero(a);
+      const nb = numero(b);
+      if (na !== nb) return dir * (na - nb);
       return a.cliente.localeCompare(b.cliente, "pt-BR");
-    });
+    };
 
-    semReferencia.sort((a, b) => a.cliente.localeCompare(b.cliente, "pt-BR"));
+    comReferencia.sort(porEmissao);
+    semReferencia.sort(porEmissao);
 
     return { comReferencia, semReferencia };
   }, [filtrados, ordemAscendente]);
