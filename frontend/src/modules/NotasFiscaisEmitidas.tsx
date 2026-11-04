@@ -58,6 +58,19 @@ type NotaFiscalItem = {
   codigoTributacao?: string;
   padraoNome?: string;
   avisos?: string[];
+  qtdLancamentos?: number;
+  somaLancamentos?: number;
+};
+
+// V17: nota composta (vários lançamentos/relatórios numa nota só)
+type LancamentoComp = { id: string; cliente: string; referencia: string; valor: number };
+type ComposicaoNota = {
+  valorNota: number;
+  soma: number;
+  falta: number;
+  itens: LancamentoComp[];
+  candidatos: LancamentoComp[];
+  combinacaoSugerida: string[];
 };
 
 type StatusNota = "aberta" | "recebida" | "cancelada" | "vencida";
@@ -243,6 +256,10 @@ export default function NotasFiscaisEmitidas({
   const [marcandoLote, setMarcandoLote] = useState(false);
   const [conflito, setConflito] = useState<(ConflitoInfo & { _origem: { item: NotaFiscalItem; financeiroId: string; isPendente: boolean } }) | null>(null);
   const [vinculandoId, setVinculandoId] = useState<string | null>(null);
+  const [compondoId, setCompondoId] = useState<string | null>(null);
+  const [composicao, setComposicao] = useState<ComposicaoNota | null>(null);
+  const [compSelecionados, setCompSelecionados] = useState<Set<string>>(new Set());
+  const [salvandoComp, setSalvandoComp] = useState(false);
   const [carregandoArquivo, setCarregandoArquivo] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -750,6 +767,71 @@ export default function NotasFiscaisEmitidas({
 
   const [candidatosVinculo, setCandidatosVinculo] = useState<FinanceiroResumo[]>([]);
 
+  async function abrirComposicao(item: NotaFiscalItem) {
+    if (compondoId === item.id) {
+      setCompondoId(null);
+      return;
+    }
+    setMsg("");
+    setComposicao(null);
+    setCompondoId(item.id);
+    try {
+      const res = await fetch(`${API_BASE}/notas-fiscais/${item.id}/composicao`);
+      if (!res.ok) {
+        setMsg(await mensagemDeErroHttp(res, "Erro ao carregar a composição da nota."));
+        setCompondoId(null);
+        return;
+      }
+      const data: ComposicaoNota = await res.json();
+      setComposicao(data);
+      setCompSelecionados(new Set(data.combinacaoSugerida || []));
+    } catch (err) {
+      setMsg(`Erro ao carregar a composição: ${err}`);
+      setCompondoId(null);
+    }
+  }
+
+  function alternarCompSelecionado(id: string) {
+    setCompSelecionados((prev) => {
+      const novo = new Set(prev);
+      if (novo.has(id)) novo.delete(id);
+      else novo.add(id);
+      return novo;
+    });
+  }
+
+  async function salvarComposicao(item: NotaFiscalItem) {
+    if (!composicao || compSelecionados.size === 0) return;
+    setSalvandoComp(true);
+    setMsg("");
+    try {
+      // um de cada vez: o servidor confere a soma a cada lançamento e recusa o que passar
+      for (const lancId of Array.from(compSelecionados)) {
+        const res = await fetch(`${API_BASE}/vinculos`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lancamentoId: lancId, notaId: item.id, origem: "composicao", adicionarANota: true }),
+        });
+        if (!res.ok) {
+          setMsg(await mensagemDeErroHttp(res, "Não foi possível ligar esse lançamento à nota."));
+          break;
+        }
+        const data = await res.json();
+        if (data.status !== "ok") {
+          setMsg(data.erro || "Não foi possível ligar esse lançamento à nota.");
+          break;
+        }
+      }
+      setCompondoId(null);
+      await carregar();
+      onMudou?.();
+    } catch (err) {
+      setMsg(`Erro ao compor a nota: ${err}`);
+    } finally {
+      setSalvandoComp(false);
+    }
+  }
+
   async function abrirPickerVinculo(item: NotaFiscalItem) {
     if (vinculandoId === item.id) {
       setVinculandoId(null);
@@ -808,6 +890,13 @@ export default function NotasFiscaisEmitidas({
         .nfe-badge-vencida { background: #fee2e2; color: #991b1b; }
         .nfe-lote-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 14px; padding: 10px 14px; }
         .nfe-lote-bar strong { color: #1e3a8a; }
+        .nfe-comp { margin-top: 10px; border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 14px; padding: 12px; font-size: 13px; }
+        .nfe-comp h4 { margin: 0 0 8px; font-size: 14px; font-weight: 1000; color: #1e3a8a; }
+        .nfe-comp-linha { display: flex; gap: 8px; align-items: center; padding: 4px 0; font-weight: 700; }
+        .nfe-comp-total { margin: 10px 0; font-weight: 1000; }
+        .nfe-comp-total.ok { color: #166534; } .nfe-comp-total.falta { color: #92400e; } .nfe-comp-total.excede { color: #991b1b; }
+        .nfe-badge-comp { font-size: 11px; font-weight: 800; margin-top: 4px; color: #1e3a8a; }
+        .nfe-badge-comp.falta { color: #92400e; }
         .nfe-picker-vinculo { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
         .nfe-picker-vinculo select { border: 1px solid #d1d5db; border-radius: 8px; padding: 8px; font-size: 12px; font-weight: 700; max-width: 320px; }
 
@@ -985,6 +1074,48 @@ export default function NotasFiscaisEmitidas({
     </div>
   );
 
+  function renderComposicao(item: NotaFiscalItem) {
+    if (!composicao) return <div className="nfe-comp">Carregando...</div>;
+    const extra = composicao.candidatos.filter((c) => compSelecionados.has(c.id)).reduce((a, c) => a + Number(c.valor || 0), 0);
+    const total = composicao.soma + extra;
+    const excede = total > composicao.valorNota + 0.01;
+    const falta = composicao.valorNota - total;
+    const classe = excede ? "excede" : falta > 0.01 ? "falta" : "ok";
+    return (
+      <div className="nfe-comp">
+        <h4>Compor nota {item.numeroNota || ""} — valor da nota {brl(composicao.valorNota)}</h4>
+        <div style={{ marginBottom: 6 }}>Junte aqui os lançamentos/relatórios do mesmo cliente que esta nota cobre. A soma nunca pode passar do valor da nota.</div>
+        <strong>Já ligados a esta nota:</strong>
+        {composicao.itens.length === 0 && <div className="nfe-comp-linha">nenhum ainda</div>}
+        {composicao.itens.map((l) => (
+          <div key={l.id} className="nfe-comp-linha">✓ {l.cliente} — {l.referencia || "-"} — {brl(l.valor)}</div>
+        ))}
+        <div style={{ marginTop: 8 }}><strong>Adicionar:</strong></div>
+        {composicao.candidatos.length === 0 && (
+          <div className="nfe-comp-linha">Nenhum lançamento desse cliente, sem nota, cabe no valor que falta.</div>
+        )}
+        {composicao.candidatos.map((l) => (
+          <label key={l.id} className="nfe-comp-linha">
+            <input type="checkbox" checked={compSelecionados.has(l.id)} onChange={() => alternarCompSelecionado(l.id)} />
+            {l.cliente} — {l.referencia || "-"} — {brl(l.valor)}
+          </label>
+        ))}
+        <div className={`nfe-comp-total ${classe}`}>
+          Total: {brl(total)} de {brl(composicao.valorNota)}
+          {excede && ` — passa ${brl(total - composicao.valorNota)} do valor da nota. Desmarque algum.`}
+          {!excede && falta > 0.01 && ` — falta ${brl(falta)} (pode salvar e completar depois).`}
+          {classe === "ok" && " — fecha certinho com a nota."}
+        </div>
+        <div className="nfe-actions">
+          <button className="nfe-btn nfe-btn-green" disabled={excede || compSelecionados.size === 0 || salvandoComp} onClick={() => salvarComposicao(item)}>
+            {salvandoComp ? "Salvando..." : "Salvar composição"}
+          </button>
+          <button className="nfe-btn" onClick={() => setCompondoId(null)}>Fechar</button>
+        </div>
+      </div>
+    );
+  }
+
   function renderLinhaNota(item: NotaFiscalItem) {
     const status = statusNota(item);
     const linhaClasse = item.cancelada ? "nfe-linha-cancelada" : status === "vencida" ? "nfe-linha-vencida" : "";
@@ -1018,7 +1149,17 @@ export default function NotasFiscaisEmitidas({
         </td>
         <td data-label="Emissão">{dataCurtaBR(item.dataEmissao)}</td>
         <td data-label="Vencimento">{dataCurtaBR(item.vencimento)}</td>
-        <td data-label="Valor">{brl(item.valor)}</td>
+        <td data-label="Valor">
+          {brl(item.valor)}
+          {(item.qtdLancamentos || 0) > 1 && (
+            <div className={`nfe-badge-comp${(item.somaLancamentos || 0) < item.valor - 0.01 ? " falta" : ""}`}>
+              {item.qtdLancamentos} lançamentos: {brl(item.somaLancamentos || 0)}
+            </div>
+          )}
+          {(item.qtdLancamentos || 0) >= 1 && !item.cancelada && (item.somaLancamentos || 0) < item.valor - 0.01 && (
+            <div className="nfe-badge-comp falta">falta {brl(item.valor - (item.somaLancamentos || 0))} em lançamentos</div>
+          )}
+        </td>
         <td data-label="Ações">
           <div className="nfe-actions">
             {item.temArquivo && (
@@ -1045,8 +1186,12 @@ export default function NotasFiscaisEmitidas({
             {!item.financeiroId && (
               <button className="nfe-btn" onClick={() => abrirPickerVinculo(item)}>Vincular a existente</button>
             )}
+            {!item.cancelada && (
+              <button className="nfe-btn" onClick={() => abrirComposicao(item)}>Compor nota (vários lançamentos)</button>
+            )}
             <button className="nfe-btn nfe-btn-red" onClick={() => excluir(item)}>Excluir</button>
           </div>
+          {compondoId === item.id && renderComposicao(item)}
           {vinculandoId === item.id && (
             <div className="nfe-picker-vinculo">
               <select

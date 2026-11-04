@@ -801,6 +801,49 @@ def _aplicar_classe_na_nota(conn, nota_id: str, classe: str, data_referencia: st
             (nota_id,),
         )
 
+def _lancamentos_da_nota(conn, nota_id: str) -> list:
+    """V17: todos os lançamentos do Financeiro ligados a uma nota - o do vínculo principal
+    (tabela vinculos) + os extras da nota composta (tabela nota_composicao)."""
+    return conn.execute(
+        "SELECT f.* FROM financeiro f WHERE f.id IN ("
+        "  SELECT lancamento_id FROM vinculos WHERE nota_id = ? AND lancamento_id IS NOT NULL"
+        "  UNION SELECT lancamento_id FROM nota_composicao WHERE nota_id = ?"
+        ") ORDER BY f.ano_referencia, f.mes_referencia",
+        (nota_id, nota_id),
+    ).fetchall()
+
+def _nota_do_lancamento(conn, lancamento_id: str):
+    """V17: id da nota onde o lançamento está (principal ou extra), ou None."""
+    r = conn.execute("SELECT nota_id FROM vinculos WHERE lancamento_id = ? AND nota_id IS NOT NULL", (lancamento_id,)).fetchone()
+    if r:
+        return r[0]
+    r = conn.execute("SELECT nota_id FROM nota_composicao WHERE lancamento_id = ?", (lancamento_id,)).fetchone()
+    return r[0] if r else None
+
+def _sincronizar_nota_pelos_lancamentos(conn, nota_id: str):
+    """V17: nota composta - ela só vira recebida/cancelada quando TODOS os lançamentos
+    dela estiverem assim; senão fica (ou volta) em aberto."""
+    lancs = _lancamentos_da_nota(conn, nota_id)
+    if not lancs:
+        return
+    classes = {_classificar_financeiro(l["status"]) for l in lancs}
+    classe = classes.pop() if len(classes) == 1 else "aberto"
+    datas = [l["data_recebimento"] for l in lancs if l["data_recebimento"]]
+    _aplicar_classe_na_nota(conn, nota_id, classe, max(datas) if datas else "")
+
+def _propagar_da_nota(conn, nota_id: str):
+    """Mudou o status da NOTA: reflete no(s) lançamento(s). Com um lançamento só, é
+    exatamente a regra antiga; com nota composta, vale pra todos."""
+    vinculo = conn.execute("SELECT * FROM vinculos WHERE nota_id = ?", (nota_id,)).fetchone()
+    lancs = _lancamentos_da_nota(conn, nota_id)
+    if len(lancs) > 1:
+        nota = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (nota_id,)).fetchone()
+        classe = _classificar_nota(nota["cancelada"], nota["data_recebimento"])
+        for l in lancs:
+            _aplicar_classe_no_financeiro(conn, l["id"], classe, nota["data_recebimento"])
+    elif vinculo:
+        _propagar_status_vinculo(conn, vinculo, origem="nota")
+
 def _propagar_status_vinculo(conn, vinculo_row, origem: str):
     """origem: 'financeiro' | 'nota' - o lado que acabou de ser editado é sempre a fonte
     da verdade; empurra a classe (recebido/cancelado/aberto) pro outro lado, na MESMA
@@ -811,6 +854,18 @@ def _propagar_status_vinculo(conn, vinculo_row, origem: str):
     financeiro = conn.execute("SELECT * FROM financeiro WHERE id = ?", (vinculo_row["lancamento_id"],)).fetchone()
     nota = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (vinculo_row["nota_id"],)).fetchone()
     if not financeiro or not nota:
+        return
+    # V17: nota composta (vários lançamentos na mesma nota). Com UM lançamento só, segue
+    # exatamente a regra antiga abaixo.
+    lancamentos_da_nota = _lancamentos_da_nota(conn, nota["id"])
+    if len(lancamentos_da_nota) > 1:
+        if origem == "nota":
+            # a nota é a fonte da verdade: reflete em TODOS os lançamentos dela
+            classe = _classificar_nota(nota["cancelada"], nota["data_recebimento"])
+            for lanc in lancamentos_da_nota:
+                _aplicar_classe_no_financeiro(conn, lanc["id"], classe, nota["data_recebimento"])
+        else:
+            _sincronizar_nota_pelos_lancamentos(conn, nota["id"])
         return
     if origem == "financeiro":
         classe = _classificar_financeiro(financeiro["status"])
@@ -898,6 +953,7 @@ def montar_dashboard_financeiro():
     notas = conn.execute("SELECT * FROM notas_fiscais WHERE COALESCE(cancelada, 0) = 0").fetchall()
     financeiro_rows = conn.execute("SELECT * FROM financeiro").fetchall()
     vinculos_rows = conn.execute("SELECT * FROM vinculos").fetchall()
+    composicao_rows = conn.execute("SELECT * FROM nota_composicao").fetchall()  # V17
     conn.close()
 
     financeiro_usados = set()
@@ -908,7 +964,12 @@ def montar_dashboard_financeiro():
         financeiro_id_resolvido = vinculo["lancamento_id"] if vinculo else None
         if financeiro_id_resolvido:
             financeiro_usados.add(financeiro_id_resolvido)
+        # V17: nota composta - todos os lançamentos dela saem de "pendente de nota"
+        ids_da_nota = [v["lancamento_id"] for v in vinculos_rows if v["nota_id"] == n["id"] and v["lancamento_id"]]
+        ids_da_nota += [c["lancamento_id"] for c in composicao_rows if c["nota_id"] == n["id"] and c["lancamento_id"] not in ids_da_nota]
+        financeiro_usados.update(ids_da_nota)
         item["financeiroIdResolvido"] = financeiro_id_resolvido
+        item["financeiroIdsResolvidos"] = ids_da_nota
         notas_enriquecidas.append(item)
 
     # Um lançamento também pode estar vinculado direto a um Relatório/Histórico de PDFs
@@ -968,6 +1029,8 @@ def montar_dashboard_financeiro():
             entrada["notaId"] = v["nota_id"]
         if v["historico_id"]:
             entrada["historicoPdfId"] = v["historico_id"]
+    for c in composicao_rows:  # V17: lançamento extra de nota composta também abre a nota
+        vinculos_financeiro.setdefault(c["lancamento_id"], {}).setdefault("notaId", c["nota_id"])
 
     return notas_enriquecidas, sem_nota_emitida, vinculos_financeiro
 
@@ -1124,6 +1187,21 @@ def init_db():
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_vinculos_lancamento ON vinculos(lancamento_id) WHERE lancamento_id IS NOT NULL")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_vinculos_nota ON vinculos(nota_id) WHERE nota_id IS NOT NULL")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_vinculos_historico ON vinculos(historico_id) WHERE historico_id IS NOT NULL")
+    # ===== V17: nota composta (vários lançamentos/relatórios numa nota só) =====
+    # Tabela NOVA e separada (migração só aditiva): o 1º lançamento da nota continua no
+    # vínculo de sempre (tabela vinculos, que tem nota_id único); os lançamentos EXTRAS
+    # da mesma nota ficam aqui. Cada lançamento só pode estar em uma nota.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS nota_composicao (
+            id TEXT PRIMARY KEY,
+            nota_id TEXT NOT NULL,
+            lancamento_id TEXT NOT NULL,
+            criado_em TEXT NOT NULL,
+            origem TEXT NOT NULL DEFAULT 'composicao'
+        )
+    """)
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_nota_composicao_lanc ON nota_composicao(lancamento_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_nota_composicao_nota ON nota_composicao(nota_id)")
 
     # ===== MIGRAÇÃO: novas colunas do financeiro (Agenda de Cobrança completa) =====
     colunas_existentes = {row["name"] for row in cur.execute("PRAGMA table_info(financeiro)").fetchall()}
@@ -1565,6 +1643,9 @@ class VinculoCreatePayload(BaseModel):
     historicoId: Optional[str] = None
     origem: str = "manual"
     resolverConflito: Optional[str] = None  # "financeiro" | "nota" - só no reenvio após um 409
+    # V17: True = acrescenta este lançamento a uma nota que já tem outro(s) lançamento(s)
+    # ("nota composta": vários relatórios/lançamentos numa nota só). False = regra antiga.
+    adicionarANota: bool = False
 
 class EquipePayload(BaseModel):
     id: Optional[str] = None
@@ -1794,6 +1875,108 @@ def sugestoes_vinculos(tipo: str, id: str, sessao: dict = Depends(obter_sessao))
     conn.close()
     return resultado
 
+def _brl(v: float) -> str:
+    return "R$ " + f"{float(v or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def _soma_lancamentos(lancs) -> float:
+    return round(sum(float(l["valor"] or 0) for l in lancs), 2)
+
+def _adicionar_lancamento_a_nota(conn, lanc, nota, hist, payload):
+    """V17 - nota composta. Devolve o resultado (e fecha a conexão), ou None quando a nota
+    ainda não tem nenhum lançamento (aí o chamador segue a regra antiga de 1º vínculo).
+    Regras: mesmo cliente; lançamento não pode estar em outra nota; a soma dos
+    lançamentos nunca passa do valor da nota (bloqueia com 409). O relatório que já
+    estava ligado ao lançamento continua ligado a ele (não é mexido)."""
+    if not _cliente_bate(lanc["cliente"], nota["cliente"]):
+        conn.close()
+        raise HTTPException(status_code=409, detail=f"O lançamento é de outro cliente ({lanc['cliente']}) — não pode entrar na nota de {nota['cliente']}.")
+
+    nota_atual = _nota_do_lancamento(conn, lanc["id"])
+    if nota_atual:
+        conn.close()
+        if nota_atual == nota["id"]:
+            return {"status": "ok", "jaEstava": True}
+        raise HTTPException(status_code=409, detail="Esse lançamento já está ligado a outra nota fiscal.")
+
+    atuais = _lancamentos_da_nota(conn, nota["id"])
+    soma_nova = round(_soma_lancamentos(atuais) + float(lanc["valor"] or 0), 2)
+    valor_nota = round(float(nota["valor"] or 0), 2)
+    if soma_nova > valor_nota + 0.01:
+        conn.close()
+        raise HTTPException(status_code=409, detail=(
+            f"A soma dos lançamentos ({_brl(soma_nova)}) passaria do valor da nota ({_brl(valor_nota)}). Nada foi gravado."
+        ))
+    if not atuais:
+        return None
+
+    agora = datetime.now().isoformat()
+    conn.execute(
+        "INSERT INTO nota_composicao (id, nota_id, lancamento_id, criado_em, origem) VALUES (?, ?, ?, ?, ?)",
+        (str(uuid.uuid4()), nota["id"], lanc["id"], agora, payload.origem or "composicao"),
+    )
+    conn.execute(
+        "UPDATE financeiro SET nota_enviada = 1, nota = ?, data_envio_nota = ? WHERE id = ?",
+        (nota["numero_nota"], nota["data_emissao"] or datetime.now().strftime("%Y-%m-%d"), lanc["id"]),
+    )
+    # status: se a nota já está recebida/cancelada, o lançamento novo acompanha a nota
+    classe_n = _classificar_nota(nota["cancelada"], nota["data_recebimento"])
+    if classe_n != "aberto":
+        _aplicar_classe_no_financeiro(conn, lanc["id"], classe_n, nota["data_recebimento"])
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "somaNota": soma_nova, "valorNota": valor_nota}
+
+def _composicao_nota(conn, nota) -> dict:
+    atuais = _lancamentos_da_nota(conn, nota["id"])
+    soma = _soma_lancamentos(atuais)
+    valor = round(float(nota["valor"] or 0), 2)
+    return {
+        "valorNota": valor,
+        "soma": soma,
+        "falta": round(max(valor - soma, 0), 2),
+        "excedente": round(max(soma - valor, 0), 2),
+        "itens": [row_financeiro(l) for l in atuais],
+    }
+
+@app.get("/notas-fiscais/{item_id}/composicao")
+def composicao_nota_fiscal(item_id: str, sessao: dict = Depends(obter_sessao)):
+    """V17: lançamentos já ligados à nota + candidatos (mesmo cliente, sem nota, que cabem
+    no valor que falta) + uma combinação que fecha o valor exato, quando existir."""
+    conn = conectar_db()
+    nota = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
+    if not nota:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Nota fiscal não encontrada")
+    comp = _composicao_nota(conn, nota)
+    com_nota = {r[0] for r in conn.execute(
+        "SELECT lancamento_id FROM vinculos WHERE nota_id IS NOT NULL AND lancamento_id IS NOT NULL "
+        "UNION SELECT lancamento_id FROM nota_composicao"
+    ).fetchall()}
+    candidatos = [
+        f for f in conn.execute("SELECT * FROM financeiro").fetchall()
+        if f["id"] not in com_nota
+        and (f["status"] or "") != "nota_cancelada"
+        and float(f["valor"] or 0) > 0
+        and float(f["valor"] or 0) <= comp["falta"] + 0.01
+        and _cliente_bate(f["cliente"], nota["cliente"])
+    ]
+    candidatos.sort(key=lambda f: ((f["ano_referencia"] or 0), (f["mes_referencia"] or 0)))
+    conn.close()
+
+    # combinação que fecha exatamente o que falta (poucos itens primeiro)
+    from itertools import combinations
+    combinacao = []
+    if comp["falta"] > 0 and candidatos:
+        pool = candidatos[:14]
+        for tam in range(1, min(6, len(pool)) + 1):
+            for combo in combinations(pool, tam):
+                if abs(sum(float(c["valor"] or 0) for c in combo) - comp["falta"]) < 0.01:
+                    combinacao = [c["id"] for c in combo]
+                    break
+            if combinacao:
+                break
+    return {"status": "ok", **comp, "candidatos": [row_financeiro(c) for c in candidatos], "combinacaoSugerida": combinacao}
+
 def _criar_vinculo_core(payload: VinculoCreatePayload) -> dict:
     ids_informados = [x for x in (payload.lancamentoId, payload.notaId, payload.historicoId) if x]
     if len(ids_informados) < 2:
@@ -1812,6 +1995,21 @@ def _criar_vinculo_core(payload: VinculoCreatePayload) -> dict:
     if payload.historicoId and not hist:
         conn.close()
         return {"status": "erro", "erro": "Registro do histórico não encontrado"}
+
+    # V17: um lançamento EXTRA de nota composta não pode ir pra outra nota pelo caminho
+    # antigo; e uma nota que já tem extras sempre usa a regra da soma.
+    if lanc and nota:
+        extra = conn.execute("SELECT nota_id FROM nota_composicao WHERE lancamento_id = ?", (lanc["id"],)).fetchone()
+        if extra and extra[0] != nota["id"]:
+            conn.close()
+            return {"status": "erro", "erro": "Esse lançamento já está ligado a outra nota fiscal."}
+        if conn.execute("SELECT 1 FROM nota_composicao WHERE nota_id = ?", (nota["id"],)).fetchone():
+            payload.adicionarANota = True
+    if payload.adicionarANota and lanc and nota:
+        resultado_composto = _adicionar_lancamento_a_nota(conn, lanc, nota, hist, payload)
+        if resultado_composto is not None:
+            return resultado_composto
+        # nota ainda sem nenhum lançamento: segue a regra antiga (1º vínculo normal)
 
     vinculos_por_campo = {}
     for campo, valor_id in (("lancamento_id", payload.lancamentoId), ("nota_id", payload.notaId), ("historico_id", payload.historicoId)):
@@ -1944,6 +2142,10 @@ def salvar_financeiro(payload: FinanceiroPayload, sessao: dict = Depends(exigir_
     vinculo = conn.execute("SELECT * FROM vinculos WHERE lancamento_id = ?", (item_id,)).fetchone()
     if vinculo:
         _propagar_status_vinculo(conn, vinculo, origem="financeiro")
+    # V17: lançamento EXTRA de nota composta (fica em nota_composicao, não em vinculos)
+    extra = conn.execute("SELECT nota_id FROM nota_composicao WHERE lancamento_id = ?", (item_id,)).fetchone()
+    if extra:
+        _sincronizar_nota_pelos_lancamentos(conn, extra[0])
 
     # Tarefa "Pendentes de vínculo": se um historicoId foi informado e ele ainda não
     # estiver vinculado a nada, cria/completa o vínculo lançamento+histórico agora.
@@ -1978,6 +2180,7 @@ def salvar_financeiro(payload: FinanceiroPayload, sessao: dict = Depends(exigir_
 def excluir_financeiro(item_id: str, sessao: dict = Depends(exigir_admin)):
     conn = conectar_db()
     _cascade_excluir_vinculos_de(conn, lancamento_id=item_id)
+    conn.execute("DELETE FROM nota_composicao WHERE lancamento_id = ?", (item_id,))  # V17: só o elo
     conn.execute("DELETE FROM financeiro WHERE id = ?", (item_id,))
     conn.commit()
     conn.close()
@@ -2369,8 +2572,21 @@ def descartar_nota_manual(token: str, sessao: dict = Depends(exigir_admin)):
 def listar_notas_fiscais(mes: Optional[int] = None, ano: Optional[int] = None, cliente: Optional[str] = None, sessao: dict = Depends(obter_sessao)):
     conn = conectar_db()
     rows = conn.execute("SELECT * FROM notas_fiscais ORDER BY criado_em DESC").fetchall()
+    # V17: quantos lançamentos e quanto somam por nota (nota composta)
+    resumo_comp = {}
+    for r in conn.execute(
+        "SELECT x.nota_id AS nota_id, COUNT(*) AS qtd, SUM(COALESCE(f.valor, 0)) AS soma FROM ("
+        "  SELECT nota_id, lancamento_id FROM vinculos WHERE nota_id IS NOT NULL AND lancamento_id IS NOT NULL"
+        "  UNION SELECT nota_id, lancamento_id FROM nota_composicao"
+        ") x JOIN financeiro f ON f.id = x.lancamento_id GROUP BY x.nota_id"
+    ).fetchall():
+        resumo_comp[r["nota_id"]] = {"qtdLancamentos": r["qtd"], "somaLancamentos": round(r["soma"] or 0, 2)}
     conn.close()
-    itens = [row_nota_fiscal(r) for r in rows]
+    itens = []
+    for r in rows:
+        item = row_nota_fiscal(r)
+        item.update(resumo_comp.get(r["id"], {"qtdLancamentos": 0, "somaLancamentos": 0}))
+        itens.append(item)
     if mes:
         itens = [i for i in itens if i["mesReferencia"] == mes]
     if ano:
@@ -2400,9 +2616,7 @@ def marcar_notas_recebidas(payload: MarcarRecebidasPayload, sessao: dict = Depen
             "UPDATE notas_fiscais SET data_recebimento = ? WHERE id = ?",
             (payload.dataRecebimento, item_id),
         )
-        vinculo = conn.execute("SELECT * FROM vinculos WHERE nota_id = ?", (item_id,)).fetchone()
-        if vinculo:
-            _propagar_status_vinculo(conn, vinculo, origem="nota")
+        _propagar_da_nota(conn, item_id)  # V17: inclui todos os lançamentos de nota composta
         atualizadas.append(item_id)
     conn.commit()
     conn.close()
@@ -2443,9 +2657,7 @@ def editar_nota_fiscal(item_id: str, payload: NotaFiscalEditPayload, sessao: dic
         # dataRecebimento ou cancelada explícitos -> reflete no lançamento vinculado, se
         # houver (propagação bidirecional de status via a tabela vinculos).
         if dados.get("dataRecebimento") is not None or dados.get("cancelada") is not None:
-            vinculo = conn.execute("SELECT * FROM vinculos WHERE nota_id = ?", (item_id,)).fetchone()
-            if vinculo:
-                _propagar_status_vinculo(conn, vinculo, origem="nota")
+            _propagar_da_nota(conn, item_id)  # V17: inclui todos os lançamentos de nota composta
         conn.commit()
 
     row = conn.execute("SELECT * FROM notas_fiscais WHERE id = ?", (item_id,)).fetchone()
@@ -2522,6 +2734,10 @@ def excluir_nota_fiscal(item_id: str, sessao: dict = Depends(exigir_admin)):
         if caminho.exists():
             caminho.unlink()
     _cascade_excluir_vinculos_de(conn, nota_id=item_id)
+    # V17: lançamentos extras da nota composta perdem a nota (os lançamentos ficam)
+    for extra in conn.execute("SELECT lancamento_id FROM nota_composicao WHERE nota_id = ?", (item_id,)).fetchall():
+        conn.execute("UPDATE financeiro SET nota_enviada = 0, nota = '', data_envio_nota = '' WHERE id = ?", (extra[0],))
+    conn.execute("DELETE FROM nota_composicao WHERE nota_id = ?", (item_id,))
     conn.execute("DELETE FROM notas_fiscais WHERE id = ?", (item_id,))
     conn.commit()
     conn.close()
