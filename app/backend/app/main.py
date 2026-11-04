@@ -482,9 +482,14 @@ def _extrair_referencia_e_vencimento(texto: str):
     nunca chuta a data de emissão."""
     t = _sem_acento(texto or "").upper()
     mes = ano = None
-    m = re.search(rf"MES\s*DE\s*({_MESES_REGEX})\s*(?:DE|/)?\s*(20\d{{2}})", t)
+    # Aceita mais de um mês na mesma nota ("MÊS DE MARÇO E ABRIL DE 2026", nota que
+    # junta dois relatórios) — usa o ÚLTIMO mês citado, igual ao lançamento no Financeiro.
+    m = re.search(
+        rf"MES(?:ES)?\s*DE\s*((?:{_MESES_REGEX})(?:\s*(?:,|E|/|A)\s*(?:{_MESES_REGEX}))*)\s*(?:DE|/)?\s*(20\d{{2}})", t
+    )
     if m:
-        mes = MESES_PT.get(m.group(1).lower())
+        meses_citados = re.findall(_MESES_REGEX, m.group(1))
+        mes = MESES_PT.get(meses_citados[-1].lower())
         ano = int(m.group(2))
     venc = ""
     m_v = re.search(r"VENCIMENTO\s*(?:EM|:)?\s*(\d{2}/\d{2}/\d{4})", t)
