@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { abrirArquivoAutenticado, baixarArquivoAutenticado } from "../services/auth";
+import { dataDoServidor, dataHoraBR } from "./shared/datas";
 
 const API_BASE = "/api";
 const CHAVE_REABRIR = "ytalseg_reabrir_relatorio_pendente";
@@ -33,7 +34,7 @@ function dataBR(iso: string) {
 
 function dataParaFiltro(item: HistoricoItem) {
   if (item.dataDocumento) return new Date(`${item.dataDocumento}T00:00:00`);
-  return new Date(item.criadoEm);
+  return dataDoServidor(item.criadoEm) || new Date(item.criadoEm);
 }
 
 const MESES = ["Todos", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
@@ -508,7 +509,7 @@ export default function HistoricoPDFs({ onAbrirRelatorio }: { onAbrirRelatorio?:
                 <td data-label="Cliente">{item.cliente || "-"}</td>
                 <td data-label="Referência">{item.referencia || "-"}</td>
                 <td data-label="Valor">{brl(item.valor)}</td>
-                <td data-label="Gerado em">{dataBR(item.dataDocumento ? `${item.dataDocumento}T00:00:00` : item.criadoEm)}</td>
+                <td data-label="Gerado em">{item.dataDocumento ? dataBR(`${item.dataDocumento}T00:00:00`) : dataHoraBR(item.criadoEm)}</td>
                 <td data-label="Ações">
                   <div className="hist-actions">
                     {item.temDados && (

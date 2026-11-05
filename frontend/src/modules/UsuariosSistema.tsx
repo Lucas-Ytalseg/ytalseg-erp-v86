@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { dataHoraBR } from "./shared/datas";
 
 const API_BASE = "/api";
 const VERDE = "#00B050";
@@ -212,7 +213,7 @@ export default function UsuariosSistema() {
                     {item.perfil === "admin" ? "Admin" : "Visualização"}
                   </span>
                 </td>
-                <td>{item.criado_em ? new Date(item.criado_em).toLocaleString("pt-BR") : "-"}</td>
+                <td>{item.criado_em ? dataHoraBR(item.criado_em) : "-"}</td>
                 <td>
                   {redefinindoId === item.id ? (
                     <div className="redef-box">

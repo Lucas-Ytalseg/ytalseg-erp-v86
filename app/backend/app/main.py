@@ -3,7 +3,22 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+# Fuso: o Railway roda em UTC. Horário de registro (criado_em etc.) continua em UTC
+# (a tela converte pra Brasília). Datas de calendário (envio, recebimento, emissão) e
+# nomes de arquivo usam o horário de Brasília (UTC-3, sem horário de verão desde 2019)
+# - senão, depois das 21h, o sistema gravava a data de amanhã.
+_FUSO_BR = timezone(timedelta(hours=-3))
+
+def _agora_utc():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+def _agora_br():
+    return datetime.now(_FUSO_BR).replace(tzinfo=None)
+
+def _hoje_br():
+    return _agora_br().strftime("%Y-%m-%d")
 import re
 import json
 import os
@@ -166,7 +181,7 @@ def parse_mes_ano_referencia(referencia: str, fallback_data: str = ""):
     except Exception:
         pass
 
-    hoje = datetime.now()
+    hoje = _agora_br()
     return mes_encontrado or hoje.month, ano_encontrado or hoje.year
 
 def parse_mes_ano_sem_fallback(referencia: str):
@@ -774,7 +789,7 @@ def _aplicar_classe_no_financeiro(conn, financeiro_id: str, classe: str, data_re
     if classe == "recebido":
         conn.execute(
             "UPDATE financeiro SET status = 'recebido', data_recebimento = ? WHERE id = ?",
-            (data_referencia or datetime.now().strftime("%Y-%m-%d"), financeiro_id),
+            (data_referencia or _hoje_br(), financeiro_id),
         )
     elif classe == "cancelado":
         conn.execute("UPDATE financeiro SET status = 'nota_cancelada' WHERE id = ?", (financeiro_id,))
@@ -791,7 +806,7 @@ def _aplicar_classe_na_nota(conn, nota_id: str, classe: str, data_referencia: st
     if classe == "recebido":
         conn.execute(
             "UPDATE notas_fiscais SET cancelada = 0, data_recebimento = ? WHERE id = ?",
-            (data_referencia or datetime.now().strftime("%Y-%m-%d"), nota_id),
+            (data_referencia or _hoje_br(), nota_id),
         )
     elif classe == "cancelado":
         conn.execute("UPDATE notas_fiscais SET cancelada = 1 WHERE id = ?", (nota_id,))
@@ -911,7 +926,7 @@ def _cascade_excluir_vinculos_de(conn, lancamento_id: Optional[str] = None, nota
     if not condicoes:
         return
     rows = conn.execute(f"SELECT * FROM vinculos WHERE {' OR '.join(condicoes)}", params).fetchall()
-    agora = datetime.now().isoformat()
+    agora = _agora_utc().isoformat()
     for row in rows:
         rompe_lancamento = bool(lancamento_id and row["lancamento_id"] == lancamento_id)
         rompe_nota = bool(nota_id and row["nota_id"] == nota_id)
@@ -1308,7 +1323,7 @@ def init_db():
         ).fetchone()
         if lancamento_ja_vinculado:
             continue  # anomalia pré-existente (2 notas apontando pro mesmo financeiro_id) - deixa pra reconciliação manual via UI
-        agora = datetime.now().isoformat()
+        agora = _agora_utc().isoformat()
         cur.execute(
             "INSERT INTO vinculos (id, lancamento_id, nota_id, historico_id, criado_em, atualizado_em, origem) "
             "VALUES (?, ?, ?, NULL, ?, ?, 'manual')",
@@ -1324,7 +1339,7 @@ def init_db():
         cur.execute(
             "INSERT INTO usuarios (id, usuario, senha_hash, salt, perfil, ativo, criado_em) "
             "VALUES (?, ?, ?, ?, ?, 1, ?)",
-            (str(uuid.uuid4()), "lucas", hash_senha(senha_gerada, salt), salt, "admin", datetime.now().isoformat()),
+            (str(uuid.uuid4()), "lucas", hash_senha(senha_gerada, salt), salt, "admin", _agora_utc().isoformat()),
         )
         conn.commit()
         print("=" * 60)
@@ -1337,7 +1352,7 @@ def init_db():
     total_codigos = cur.execute("SELECT COUNT(*) AS n FROM recuperacao_mestre").fetchone()["n"]
     if total_codigos == 0:
         codigos_gerados = [gerar_codigo_mestre_legivel() for _ in range(8)]
-        agora_codigo = datetime.now().isoformat()
+        agora_codigo = _agora_utc().isoformat()
         for codigo in codigos_gerados:
             salt_codigo = gerar_salt()
             cur.execute(
@@ -1376,7 +1391,7 @@ def auth_login(payload: LoginPayload):
     token = criar_token()
     cur.execute(
         "INSERT INTO sessoes (token, usuario, perfil, criado_em) VALUES (?, ?, ?, ?)",
-        (token, linha["usuario"], linha["perfil"], datetime.now().isoformat()),
+        (token, linha["usuario"], linha["perfil"], _agora_utc().isoformat()),
     )
     conn.commit()
     conn.close()
@@ -1442,7 +1457,7 @@ def auth_recuperar_admin(payload: RecuperarAdminPayload):
     )
     cur.execute(
         "UPDATE recuperacao_mestre SET usado = 1, usado_em = ? WHERE id = ?",
-        (datetime.now().isoformat(), codigo_valido["id"]),
+        (_agora_utc().isoformat(), codigo_valido["id"]),
     )
     cur.execute("DELETE FROM sessoes WHERE usuario = ?", (admin_row["usuario"],))
     conn.commit()
@@ -1510,7 +1525,7 @@ def criar_usuario(payload: CriarUsuarioPayload, sessao: dict = Depends(exigir_ad
     cur.execute(
         "INSERT INTO usuarios (id, usuario, senha_hash, salt, perfil, ativo, criado_em) "
         "VALUES (?, ?, ?, ?, ?, 1, ?)",
-        (str(uuid.uuid4()), usuario_norm, hash_senha(payload.senha, salt), salt, payload.perfil, datetime.now().isoformat()),
+        (str(uuid.uuid4()), usuario_norm, hash_senha(payload.senha, salt), salt, payload.perfil, _agora_utc().isoformat()),
     )
     conn.commit()
     conn.close()
@@ -1910,14 +1925,14 @@ def _adicionar_lancamento_a_nota(conn, lanc, nota, hist, payload):
     if not atuais:
         return None
 
-    agora = datetime.now().isoformat()
+    agora = _agora_utc().isoformat()
     conn.execute(
         "INSERT INTO nota_composicao (id, nota_id, lancamento_id, criado_em, origem) VALUES (?, ?, ?, ?, ?)",
         (str(uuid.uuid4()), nota["id"], lanc["id"], agora, payload.origem or "composicao"),
     )
     conn.execute(
         "UPDATE financeiro SET nota_enviada = 1, nota = ?, data_envio_nota = ? WHERE id = ?",
-        (nota["numero_nota"], nota["data_emissao"] or datetime.now().strftime("%Y-%m-%d"), lanc["id"]),
+        (nota["numero_nota"], nota["data_emissao"] or _hoje_br(), lanc["id"]),
     )
     # status: se a nota já está recebida/cancelada, o lançamento novo acompanha a nota
     classe_n = _classificar_nota(nota["cancelada"], nota["data_recebimento"])
@@ -2064,7 +2079,7 @@ def _criar_vinculo_core(payload: VinculoCreatePayload) -> dict:
         elif classe_n != "aberto":
             classe_escolhida = classe_n
 
-    agora = datetime.now().isoformat()
+    agora = _agora_utc().isoformat()
     if vinculo_alvo:
         conn.execute(
             "UPDATE vinculos SET lancamento_id=?, nota_id=?, historico_id=?, atualizado_em=? WHERE id=?",
@@ -2088,7 +2103,7 @@ def _criar_vinculo_core(payload: VinculoCreatePayload) -> dict:
             _aplicar_classe_na_nota(conn, nota_id_final, classe_escolhida, data_ref)
         conn.execute(
             "UPDATE financeiro SET nota_enviada = 1, nota = ?, data_envio_nota = ? WHERE id = ?",
-            (nota_final["numero_nota"], nota_final["data_emissao"] or datetime.now().strftime("%Y-%m-%d"), lancamento_id_final),
+            (nota_final["numero_nota"], nota_final["data_emissao"] or _hoje_br(), lancamento_id_final),
         )
         conn.execute("UPDATE notas_fiscais SET financeiro_id = ? WHERE id = ?", (lancamento_id_final, nota_id_final))
 
@@ -2140,7 +2155,7 @@ def desvincular_lado(vinculo_id: str, lado: str, sessao: dict = Depends(exigir_a
     if len(restantes) < 2:
         _desvincular(conn, row)  # sobra um lado só: some o vínculo (limpa os espelhos da nota, se houver)
     else:
-        conn.execute(f"UPDATE vinculos SET {coluna} = NULL, atualizado_em = ? WHERE id = ?", (datetime.now().isoformat(), vinculo_id))
+        conn.execute(f"UPDATE vinculos SET {coluna} = NULL, atualizado_em = ? WHERE id = ?", (_agora_utc().isoformat(), vinculo_id))
         if lado == "nota":
             conn.execute("UPDATE notas_fiscais SET financeiro_id = '' WHERE id = ?", (row["nota_id"],))
             conn.execute(
@@ -2154,7 +2169,7 @@ def desvincular_lado(vinculo_id: str, lado: str, sessao: dict = Depends(exigir_a
 @app.post("/financeiro")
 def salvar_financeiro(payload: FinanceiroPayload, sessao: dict = Depends(exigir_admin)):
     item_id = payload.id or gerar_id()
-    data_emissao = payload.dataEmissao or datetime.now().strftime("%Y-%m-%d")
+    data_emissao = payload.dataEmissao or _hoje_br()
 
     mes_ref, ano_ref = payload.mesReferencia, payload.anoReferencia
     if not mes_ref or not ano_ref:
@@ -2194,7 +2209,7 @@ def salvar_financeiro(payload: FinanceiroPayload, sessao: dict = Depends(exigir_
     if payload.historicoId:
         ja_vinculado_hist = conn.execute("SELECT 1 FROM vinculos WHERE historico_id = ?", (payload.historicoId,)).fetchone()
         if not ja_vinculado_hist:
-            agora = datetime.now().isoformat()
+            agora = _agora_utc().isoformat()
             if vinculo:
                 if not vinculo["historico_id"]:
                     conn.execute(
@@ -2262,7 +2277,7 @@ async def upload_historico_pdfs(files: List[UploadFile] = File(...), sessao: dic
         extraido = parse_relatorio_ytalseg(texto, caminho)
 
         item_id = gerar_id()
-        criado_em = datetime.now().isoformat()
+        criado_em = _agora_utc().isoformat()
         cliente = extraido["cliente"] if extraido else ""
         referencia = extraido["referencia"] if extraido else ""
         valor = extraido["valor"] if extraido else 0.0
@@ -2380,7 +2395,7 @@ def obter_arquivo_historico_pdf(item_id: str, baixar: int = 0, sessao: dict = De
 @app.post("/historico-pdfs")
 def salvar_historico_pdf(payload: HistoricoPdfPayload, sessao: dict = Depends(exigir_admin)):
     item_id = payload.id or gerar_id()
-    criado_em = datetime.now().isoformat()
+    criado_em = _agora_utc().isoformat()
     dados_json = json.dumps(payload.dados, ensure_ascii=False) if payload.dados else None
     mes_ref, ano_ref = parse_mes_ano_sem_fallback(payload.referencia)
     conn = conectar_db()
@@ -2466,7 +2481,7 @@ def _gravar_nota(conn, dados: dict, nome_fisico: str, nome_original: str, sha256
         (item_id, str(dados.get("numeroNota") or "").strip(), (dados.get("cliente") or "").strip(),
          (dados.get("cnpjTomador") or "").strip(), dados.get("mesReferencia"), dados.get("anoReferencia"),
          dados.get("dataEmissao") or "", dados.get("vencimento") or "", float(dados.get("valor") or 0),
-         dados.get("codigoVerificacao") or "", nome_fisico, nome_original, datetime.now().isoformat(), "",
+         dados.get("codigoVerificacao") or "", nome_fisico, nome_original, _agora_utc().isoformat(), "",
          cancelada, dados.get("padrao") or "", dados.get("chaveAcesso") or "",
          dados.get("codigoTributacao") or "", dados.get("competencia") or "", sha256),
     )
@@ -2726,7 +2741,7 @@ def registrar_cobranca_nota(item_id: str, payload: CobrancaPayload, sessao: dict
             campos.append("cobranca_status = ?")
             valores.append(payload.status)
             campos.append("cobranca_data = ?")
-            valores.append(payload.data or datetime.now().strftime("%Y-%m-%d"))
+            valores.append(payload.data or _hoje_br())
         elif payload.data is not None:
             campos.append("cobranca_data = ?")
             valores.append(payload.data)
@@ -2836,7 +2851,7 @@ def criar_backup(sessao: dict = Depends(exigir_admin)):
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         if not DB_PATH.exists():
             return {"status": "erro", "erro": "Banco SQLite não encontrado."}
-        nome = f"ytalseg_erp_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        nome = f"ytalseg_erp_backup_{_agora_br().strftime('%Y%m%d_%H%M%S')}.db"
         destino = BACKUP_DIR / nome
         shutil.copy2(DB_PATH, destino)
         return {"status": "ok", "arquivo": nome, "caminho": str(destino), "pasta": str(BACKUP_DIR)}
