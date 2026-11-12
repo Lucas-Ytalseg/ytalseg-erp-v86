@@ -54,6 +54,36 @@ type VinculoInfo = { vinculoId?: string; notaId?: string; historicoPdfId?: strin
 
 type DocResumo = { id: string; temArquivo: boolean; temDados?: boolean };
 
+// V17.5: dados da nota usados pra ordenar o "Histórico de notas" e pra mostrar as notas
+// que não têm lançamento no Financeiro (ex.: nota cancelada, notas antigas da Prefeitura).
+type NotaResumo = DocResumo & {
+  numeroNota: string;
+  cliente: string;
+  valor: number;
+  padraoNota: string;
+  cancelada: boolean;
+  mesReferencia?: number | null;
+  anoReferencia?: number | null;
+  ligadaALancamento: boolean;
+};
+
+const NOMES_MESES_HIST = ["", "JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"];
+
+// Mesma regra da aba "Notas Fiscais Emitidas" (V16.5): a numeração recomeçou do 1 no
+// Emissor Nacional, então o bloco novo (5, 4, 3, 2, 1) vem antes das notas antigas da
+// Prefeitura (868, 867...). Bloco maior = mais recente.
+function blocoDaNota(padrao: string) {
+  return padrao === "nacional_danfse" ? 2 : padrao === "manual" ? 0 : 1;
+}
+
+function numeroDaNota(texto: string | undefined) {
+  return Number(String(texto || "").replace(/\D/g, "")) || 0;
+}
+
+function ehSemNota(texto: string | undefined) {
+  return /^\s*s\s*\/?\s*n\s*$/i.test(String(texto || ""));
+}
+
 type NotaForm = {
   cliente: string;
   cnpj: string;
@@ -124,7 +154,7 @@ export default function NotaFiscal({ onAbrirRelatorio }: { onAbrirRelatorio?: ()
   const [erro, setErro] = useState("");
   const [copiado, setCopiado] = useState("");
   const [detalheAberto, setDetalheAberto] = useState<Lancamento | null>(null);
-  const [notasPainel, setNotasPainel] = useState<DocResumo[]>([]);
+  const [notasPainel, setNotasPainel] = useState<NotaResumo[]>([]);
   const [historicoPdfs, setHistoricoPdfs] = useState<DocResumo[]>([]);
   const [vinculosFinanceiro, setVinculosFinanceiro] = useState<Record<string, VinculoInfo>>({});
   const [carregandoArquivo, setCarregandoArquivo] = useState<string | null>(null);
@@ -141,11 +171,13 @@ export default function NotaFiscal({ onAbrirRelatorio }: { onAbrirRelatorio?: ()
   async function carregar() {
     try {
       setErro("");
-      const [resClientes, resFin, resDash, resHist] = await Promise.all([
+      const [resClientes, resFin, resDash, resHist, resNotas] = await Promise.all([
         fetch(`${API_BASE}/empresas`),
         fetch(`${API_BASE}/financeiro`).catch(() => null),
         fetch(`${API_BASE}/dashboard/financeiro-notas`).catch(() => null),
         fetch(`${API_BASE}/historico-pdfs`).catch(() => null),
+        // V17.5: lista completa de notas (o painel acima deixa as canceladas de fora)
+        fetch(`${API_BASE}/notas-fiscais`).catch(() => null),
       ]);
 
       const dataClientes = await resClientes.json();
@@ -166,7 +198,29 @@ export default function NotaFiscal({ onAbrirRelatorio }: { onAbrirRelatorio?: ()
       if (resDash) {
         const dataDash = await resDash.json();
         if (dataDash.status === "ok") {
-          setNotasPainel((dataDash.notas || []).map((n: any) => ({ id: n.id, temArquivo: !!n.temArquivo })));
+          const notasDash: any[] = dataDash.notas || [];
+          const ligadas = new Set(
+            notasDash
+              .filter((n) => (n.financeiroIdsResolvidos || []).length > 0 || !!n.financeiroIdResolvido)
+              .map((n) => n.id)
+          );
+          let notasCompletas: any[] = notasDash;
+          if (resNotas) {
+            const dataNotas = await resNotas.json().catch(() => null);
+            if (dataNotas?.status === "ok" && Array.isArray(dataNotas.notas)) notasCompletas = dataNotas.notas;
+          }
+          setNotasPainel(notasCompletas.map((n: any) => ({
+            id: n.id,
+            temArquivo: !!n.temArquivo,
+            numeroNota: n.numeroNota || "",
+            cliente: n.cliente || "",
+            valor: Number(n.valor || 0),
+            padraoNota: n.padraoNota || "",
+            cancelada: !!n.cancelada,
+            mesReferencia: n.mesReferencia,
+            anoReferencia: n.anoReferencia,
+            ligadaALancamento: ligadas.has(n.id),
+          })));
           setVinculosFinanceiro(dataDash.vinculosFinanceiro || {});
         }
       }
@@ -193,6 +247,75 @@ export default function NotaFiscal({ onAbrirRelatorio }: { onAbrirRelatorio?: ()
     if (!histId) return null;
     return historicoPdfs.find((h) => h.id === histId) || null;
   }
+
+  // V17.5: "Histórico de notas" em ordem de emissão (igual à aba Notas Fiscais Emitidas)
+  // e com TODAS as notas, inclusive as que não têm lançamento no Financeiro (ex.: nota
+  // cancelada). Ordem: 1) lançamentos ainda sem nota (pendência a resolver); 2) notas do
+  // mais recente pro mais antigo (bloco nacional 5,4,3... depois Prefeitura 868,867...);
+  // 3) lançamentos S/N (só relatório, sem nota com imposto) no fim.
+  type LinhaHistorico =
+    | { tipo: "lanc"; chave: string; l: Lancamento }
+    | { tipo: "nota"; chave: string; n: NotaResumo };
+
+  const linhasHistorico = useMemo<LinhaHistorico[]>(() => {
+    const notaPorId = new Map(notasPainel.map((n) => [n.id, n]));
+    const notasAbsorvidas = new Set<string>();
+
+    // Nota de cada lançamento: a vinculada; se não houver vínculo, a nota com o mesmo
+    // número (lançamentos antigos guardaram só o número no campo "Nº NF").
+    const notaDoLancamento = (l: Lancamento): NotaResumo | null => {
+      const idVinc = vinculosFinanceiro[l.id]?.notaId;
+      if (idVinc && notaPorId.has(idVinc)) return notaPorId.get(idVinc)!;
+      const num = numeroDaNota(l.nota);
+      if (!num || ehSemNota(l.nota)) return null;
+      const mesmas = notasPainel.filter((n) => numeroDaNota(n.numeroNota) === num);
+      if (mesmas.length === 0) return null;
+      const nomeL = (l.cliente || "").trim().toUpperCase().slice(0, 4);
+      return mesmas.find((n) => n.cliente.toUpperCase().startsWith(nomeL)) || mesmas[0];
+    };
+
+    type Item = { linha: LinhaHistorico; grupo: number; bloco: number; numero: number; ano: number; mes: number; extra: string };
+    const itens: Item[] = [];
+
+    for (const l of financeiro) {
+      const n = notaDoLancamento(l);
+      if (n) notasAbsorvidas.add(n.id);
+      const numero = n ? numeroDaNota(n.numeroNota) : numeroDaNota(l.nota);
+      const grupo = ehSemNota(l.nota) && !n ? 2 : numero ? 1 : 0;
+      itens.push({
+        linha: { tipo: "lanc", chave: `hist-${l.id}`, l },
+        grupo,
+        bloco: n ? blocoDaNota(n.padraoNota) : 1,
+        numero,
+        ano: Number(l.anoReferencia || 0),
+        mes: Number(l.mesReferencia || 0),
+        extra: l.dataEmissao || "",
+      });
+    }
+
+    for (const n of notasPainel) {
+      if (n.ligadaALancamento || notasAbsorvidas.has(n.id)) continue;
+      itens.push({
+        linha: { tipo: "nota", chave: `hist-nota-${n.id}`, n },
+        grupo: 1,
+        bloco: blocoDaNota(n.padraoNota),
+        numero: numeroDaNota(n.numeroNota),
+        ano: Number(n.anoReferencia || 0),
+        mes: Number(n.mesReferencia || 0),
+        extra: "",
+      });
+    }
+
+    itens.sort((a, b) =>
+      a.grupo - b.grupo ||
+      b.bloco - a.bloco ||
+      b.numero - a.numero ||
+      b.ano - a.ano ||
+      b.mes - a.mes ||
+      b.extra.localeCompare(a.extra)
+    );
+    return itens.map((i) => i.linha);
+  }, [financeiro, notasPainel, vinculosFinanceiro]);
 
   useEffect(() => {
     carregar();
@@ -627,15 +750,38 @@ ${form.descricao}
             </tr>
           </thead>
           <tbody>
-            {financeiro.length === 0 && (
+            {linhasHistorico.length === 0 && (
               <tr><td colSpan={6}>Nenhuma nota ou lançamento encontrado.</td></tr>
             )}
-            {financeiro.map((l) => {
+            {linhasHistorico.map((linha) => {
+              if (linha.tipo === "nota") {
+                const n = linha.n;
+                const ref = n.mesReferencia && n.anoReferencia ? `${NOMES_MESES_HIST[n.mesReferencia] || ""} / ${n.anoReferencia}` : "-";
+                return (
+                  <tr key={linha.chave} style={n.cancelada ? { opacity: 0.6 } : undefined}>
+                    <td>{n.cliente}</td>
+                    <td>{ref}</td>
+                    <td>{n.cancelada ? <s>{brl(n.valor)}</s> : brl(n.valor)}</td>
+                    <td>{n.numeroNota || "-"}</td>
+                    <td>{n.cancelada ? "Nota cancelada" : "Nota sem lançamento"}</td>
+                    <td>
+                      <div className="actions">
+                        {n.temArquivo && (
+                          <button className="btn-gray" onClick={() => verArquivo("nota", n.id)} disabled={carregandoArquivo === `nota-${n.id}`}>
+                            {carregandoArquivo === `nota-${n.id}` ? "Abrindo..." : "Ver nota"}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }
+              const l = linha.l;
               const nota = notaVinculada(l.id);
               const historico = historicoVinculado(l.id);
               const temDocumento = !!(nota?.temArquivo || historico?.temArquivo);
               return (
-                <tr key={`hist-${l.id}`}>
+                <tr key={linha.chave}>
                   <td>{l.cliente}</td>
                   <td>{l.referencia || "-"}</td>
                   <td>{brl(l.valor)}</td>
